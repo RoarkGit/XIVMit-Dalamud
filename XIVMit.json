@@ -1,0 +1,8 @@
+{
+  "Author": "RoarkGit",
+  "Name": "XIVMit",
+  "Punchline": "In-game view of your XIVMit mitigation plan.",
+  "Description": "Loads a plan from xivmit.app and shows your upcoming mitigations on a live fight clock. Starts automatically on combat, resyncs from boss casts, and ticks off mitigations as you actually press them. Use /xivmit to open.",
+  "ApplicableVersion": "any",
+  "Tags": ["raid", "mitigation", "timeline", "savage", "ultimate"]
+}

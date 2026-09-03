@@ -17,9 +17,20 @@ public sealed class Configuration : IPluginConfiguration
     public string? LocalPlayerId { get; set; }
 
     public bool AutoStartOnCombat { get; set; } = true;
+
+    /// <summary>
+    /// Only auto-start if the loaded plan was previously used in the current territory (checked
+    /// against <see cref="PlanByTerritory"/>, the same record the zone-in prompt already builds).
+    /// Without this, combat starting in unrelated content - a roulette dungeon, a different duty -
+    /// would spuriously start the clock on whatever plan happens to be loaded from last time. It
+    /// keys off where a plan was actually used rather than any authored fight/territory mapping,
+    /// so a custom-timeline plan works exactly like a standard fight - at the cost that the very
+    /// first pull in a given territory has nothing remembered yet and needs a manual press.
+    /// </summary>
+    public bool RequireZoneMatchToAutoStart { get; set; } = true;
+
     public bool AutoStopOnCombatEnd { get; set; } = true;
     public bool SyncFromCasts { get; set; } = true;
-    public bool AllowPhaseJump { get; set; } = true;
 
     /// <summary>How far ahead the upcoming list looks, in seconds.</summary>
     public float LookaheadSeconds { get; set; } = 45f;
@@ -42,6 +53,25 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Recently loaded plans, most recent first.</summary>
     public List<RecentPlan> RecentPlans { get; set; } = [];
 
+    /// <summary>
+    /// Last plan code loaded while inside each territory, keyed by <c>IClientState.TerritoryType</c>.
+    /// Drives the zone-in load prompt - written whenever a plan finishes loading, regardless of
+    /// how it was loaded, so the remembered plan for a duty is always whichever one was used
+    /// there most recently.
+    /// </summary>
+    public Dictionary<uint, string> PlanByTerritory { get; set; } = [];
+
+    /// <summary>Whether zoning into a duty with a remembered plan offers to load it.</summary>
+    public bool PromptToLoadOnZoneIn { get; set; } = true;
+
+    /// <summary>
+    /// Whether zoning into a duty with a remembered plan (see <see cref="PlanByTerritory"/>)
+    /// opens the window, independent of <see cref="PromptToLoadOnZoneIn"/> - a duty where the
+    /// right plan is already loaded shows nothing to prompt for, but the window should still
+    /// surface rather than stay closed from wherever it was left.
+    /// </summary>
+    public bool AutoOpenInSavedZones { get; set; } = true;
+
     private const int MaxRecent = 12;
 
     /// <summary>Moves a plan to the front of the recent list, updating its cached labels.</summary>
@@ -57,6 +87,14 @@ public sealed class Configuration : IPluginConfiguration
         });
         if (RecentPlans.Count > MaxRecent)
             RecentPlans.RemoveRange(MaxRecent, RecentPlans.Count - MaxRecent);
+        Save();
+    }
+
+    /// <summary>Clears every remembered zone->plan association, e.g. to drop a bad entry
+    /// recorded before the fix that stopped this being written for non-duty territories.</summary>
+    public void ForgetZones()
+    {
+        PlanByTerritory.Clear();
         Save();
     }
 

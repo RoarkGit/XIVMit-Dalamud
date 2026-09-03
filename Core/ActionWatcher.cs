@@ -7,17 +7,18 @@ using FFXIVClientStructs.FFXIV.Client.Game.Object;
 namespace XIVMit.Core;
 
 /// <summary>One observed action-effect packet, flattened to what this plugin cares about.</summary>
-public readonly record struct ActionUsedEvent(uint CasterEntityId, uint ActionId, byte ActionType, bool IsLocalPlayer);
+public readonly record struct ActionUsedEvent(uint CasterEntityId, uint ActionId, byte ActionType);
 
 /// <summary>
 /// Hooks <c>ActionEffectHandler.Receive</c>, the client's entry point for ActionEffectN server
-/// packets. This is what catches actions that never show a cast bar: instant boss abilities and
-/// oGCD mitigations both land here and nowhere in <see cref="IBattleChara.IsCasting"/>.
+/// packets - catches boss actions that never show a cast bar, instant abilities that land here
+/// and nowhere in <see cref="IBattleChara.IsCasting"/>. Feeds <see cref="FightTracker"/>'s tier-2
+/// cast/hit sync, alongside its cast-bar polling.
 ///
-/// The hook targets a named FFXIVClientStructs member-function address rather than a raw byte
-/// signature, so a patch that shifts code around is resolved by a ClientStructs bump rather than
-/// by re-scanning a signature by hand. It is still the most patch-fragile part of the plugin:
-/// every failure path here degrades to "no press detection" rather than taking the plugin down.
+/// Targets a named FFXIVClientStructs member-function address rather than a raw byte signature,
+/// so a patch that shifts code around gets resolved by a ClientStructs bump instead of a manual
+/// re-scan. Still the most patch-fragile part of the plugin, so every failure path here just
+/// loses this half of tier 2 (cast-bar polling keeps working) rather than taking the plugin down.
 /// </summary>
 public sealed unsafe class ActionWatcher : IDisposable
 {
@@ -30,7 +31,6 @@ public sealed unsafe class ActionWatcher : IDisposable
         GameObjectId* targetIds);
 
     private readonly Hook<ReceiveActionEffectDelegate>? hook;
-    private readonly IObjectTable objects;
     private readonly IPluginLog log;
 
     /// <summary>Raised on the framework thread for every action effect the client receives.</summary>
@@ -41,9 +41,8 @@ public sealed unsafe class ActionWatcher : IDisposable
 
     public string? FailureReason { get; private set; }
 
-    public ActionWatcher(IGameInteropProvider interop, IObjectTable objects, IPluginLog log)
+    public ActionWatcher(IGameInteropProvider interop, IPluginLog log)
     {
-        this.objects = objects;
         this.log = log;
 
         try
@@ -55,7 +54,7 @@ public sealed unsafe class ActionWatcher : IDisposable
         catch (Exception ex)
         {
             FailureReason = ex.Message;
-            log.Error(ex, "Failed to hook ActionEffectHandler.Receive; press detection disabled.");
+            log.Error(ex, "Failed to hook ActionEffectHandler.Receive; hit-based sync disabled.");
         }
     }
 
@@ -75,12 +74,10 @@ public sealed unsafe class ActionWatcher : IDisposable
         {
             if (header == null) return;
 
-            var localId = objects.LocalPlayer?.EntityId ?? 0;
             ActionUsed?.Invoke(new ActionUsedEvent(
                 CasterEntityId: casterEntityId,
                 ActionId: header->ActionId,
-                ActionType: header->ActionType,
-                IsLocalPlayer: localId != 0 && casterEntityId == localId));
+                ActionType: header->ActionType));
         }
         catch (Exception ex)
         {

@@ -54,6 +54,20 @@ public sealed class ConfigWindow : Window, IDisposable
             dirty = true;
         }
 
+        using (ImRaii.Disabled(!cfg.AutoStartOnCombat))
+        {
+            var zoneMatch = cfg.RequireZoneMatchToAutoStart;
+            if (ImGui.Checkbox("Only in this plan's zone", ref zoneMatch))
+            {
+                cfg.RequireZoneMatchToAutoStart = zoneMatch;
+                dirty = true;
+            }
+            Hint("Skips auto-start if this plan hasn't been used in the current duty before, " +
+                 "so combat starting elsewhere (a roulette, a different fight) doesn't " +
+                 "spuriously start the clock. Learns as you go - the first pull in a new duty " +
+                 "needs a manual press either way.");
+        }
+
         var autoStop = cfg.AutoStopOnCombatEnd;
         if (ImGui.Checkbox("Stop clock on wipe or clear", ref autoStop))
         {
@@ -67,20 +81,43 @@ public sealed class ConfigWindow : Window, IDisposable
             cfg.SyncFromCasts = sync;
             dirty = true;
         }
-        Hint("Corrects clock drift when a recognised boss cast or hit is observed.");
+        Hint("Corrects clock drift when a recognized boss cast or hit is observed, or when " +
+             "a new boss takes over as the fight's main target (advancing to the next phase).");
 
-        using (ImRaii.Disabled(!cfg.SyncFromCasts))
+        var zonePrompt = cfg.PromptToLoadOnZoneIn;
+        if (ImGui.Checkbox("Offer to load a plan on zone-in", ref zonePrompt))
         {
-            var jump = cfg.AllowPhaseJump;
-            if (ImGui.Checkbox("Allow large jumps", ref jump))
+            cfg.PromptToLoadOnZoneIn = zonePrompt;
+            dirty = true;
+        }
+        Hint("Remembers the last plan used in each duty and offers to reload it when you " +
+             "zone back in, if a different (or no) plan is currently loaded.");
+
+        var zoneOpen = cfg.AutoOpenInSavedZones;
+        if (ImGui.Checkbox("Open window in remembered zones", ref zoneOpen))
+        {
+            cfg.AutoOpenInSavedZones = zoneOpen;
+            dirty = true;
+        }
+        Hint("Opens the window on zone-in for a remembered duty, even with nothing to prompt for.");
+
+        using (ImRaii.Disabled(cfg.PlanByTerritory.Count == 0))
+        {
+            if (ImGui.Button("Forget remembered zones")) plugin.Config.ForgetZones();
+            if (ImGui.IsItemHovered())
             {
-                cfg.AllowPhaseJump = jump;
-                dirty = true;
+                // A floating tooltip has no "available width" of its own to wrap against the way
+                // in-window text does (it sizes to its content), so the wrap point needs setting
+                // explicitly - same reasoning as Hint, just a different mechanism to get there.
+                using var tip = ImRaii.Tooltip();
+                ImGui.PushTextWrapPos(ImGui.GetFontSize() * 22f);
+                ImGui.TextUnformatted(cfg.PlanByTerritory.Count == 0
+                    ? "Nothing remembered yet."
+                    : $"Clears {cfg.PlanByTerritory.Count} remembered zone(s) - the settings " +
+                      "above start relearning from scratch. Use this if one got recorded " +
+                      "somewhere it shouldn't have (e.g. testing outside real content).");
+                ImGui.PopTextWrapPos();
             }
-            Hint("Lets the clock jump more than 5s: when a new boss takes over as the fight's\n" +
-                 "main target (advancing to the next phase), or when a recognised action is\n" +
-                 "far from where the clock expected it (skipped phase, loaded mid-fight). Turn\n" +
-                 "off if the clock jumps unexpectedly.");
         }
 
         SeparatorText("Display");
@@ -106,13 +143,6 @@ public sealed class ConfigWindow : Window, IDisposable
             dirty = true;
         }
         Hint("Draining countdown bars on a transparent window, reading as a game overlay.");
-
-        var lockWin = cfg.LockWindow;
-        if (ImGui.Checkbox("Lock window position", ref lockWin))
-        {
-            cfg.LockWindow = lockWin;
-            dirty = true;
-        }
 
         if (plugin.Tracker.HookFailure is { } fail)
         {
@@ -152,9 +182,15 @@ public sealed class ConfigWindow : Window, IDisposable
             p.Name is { Length: > 0 } n ? $"{p.Job} - {n}" : p.Job;
     }
 
+    // TextWrapped, not manually-inserted "\n"s at a fixed character count: ImGui's font is
+    // proportional, so a fixed character count wraps to a different pixel width line to line
+    // (a run of "i"/"l" vs. "m"/"w") and reads as inconsistent rather than as a paragraph.
+    // Wrapping against the real available width is also the only way this survives the window
+    // being resized at all, which a hardcoded break point never does.
     private static void Hint(string text)
     {
-        ImGui.TextColored(Theme.Text2, text);
+        using var color = ImRaii.PushColor(ImGuiCol.Text, Theme.Text2);
+        ImGui.TextWrapped(text);
     }
 
     // This Dalamud build's ImGui bindings expose only the bare Separator(), so section

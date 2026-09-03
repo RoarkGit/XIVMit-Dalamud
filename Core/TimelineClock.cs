@@ -12,18 +12,18 @@ public sealed class TimelineClock
     public ClockState State { get; private set; } = ClockState.Stopped;
 
     /// <summary>
-    /// Seconds since pull, in the fight's own absolute reference frame - resyncs correct this, so
-    /// it is the value everything that needs to know "where are we in the authored plan" reads:
-    /// phase lookups, cast-sync deltas, press attribution, mit filtering.
+    /// Seconds since pull, in the fight's own absolute reference frame. Resyncs correct this -
+    /// it's what everything reads that needs to know "where are we in the authored plan": phase
+    /// lookups, cast-sync deltas, mit filtering.
     /// </summary>
     public float Time { get; private set; }
 
     /// <summary>
-    /// Seconds since combat actually started (or play was pressed), untouched by any resync -
-    /// literally what a stopwatch would read. Nothing computes against this directly; it exists
-    /// so a resync's correction is recoverable as <c>Time - CombatTime</c> rather than lost the
-    /// moment it is folded into <see cref="Time"/>, and so a genuine "how long has this pull
-    /// really been running" reading is always available uncorrupted by sync corrections.
+    /// Seconds since combat actually started (or play was pressed) - a plain stopwatch, no resync
+    /// ever touches it. Nothing computes against this directly. It exists so a correction is
+    /// recoverable afterward as <c>Time - CombatTime</c> instead of vanishing the moment it gets
+    /// folded into <see cref="Time"/>, and so "how long has this pull really been running" has a
+    /// real answer that no sync correction can corrupt.
     /// </summary>
     public float CombatTime { get; private set; }
 

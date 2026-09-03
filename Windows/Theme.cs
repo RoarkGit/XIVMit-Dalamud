@@ -74,7 +74,7 @@ public static class Theme
             .Push(ImGuiCol.ChildBg, Bg)
             .Push(ImGuiCol.PopupBg, Card)
             // The web app's buttons read as buttons because of their 1px border, not their
-            // fill (.btn-ghost is transparent + --border). ImGui has one global border colour,
+            // fill (.btn-ghost is transparent + --border). ImGui has one global border color,
             // so this uses --text3, the lightest palette value that still belongs to the
             // chrome, and gives buttons a fill clearly lighter than the window behind them.
             .Push(ImGuiCol.Border, Text3)

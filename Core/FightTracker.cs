@@ -8,39 +8,36 @@ using XIVMit.Api;
 namespace XIVMit.Core;
 
 /// <summary>
-/// Drives the clock from live game state: starts it on combat, stops it on wipe/clear, and
-/// resyncs it from what is actually happening in the pull.
+/// Drives the clock off live game state - starts it on combat, stops it on wipe/clear, resyncs
+/// it against what's actually happening in the pull.
 ///
-/// Two tiers feed the sync, tried in order:
-///   1. Phase advance from boss identity (<see cref="DetectPhaseAdvance"/>). Exact where
-///      verified - <see cref="VerifiedPhaseOpeners"/> holds real game NPC ids confirmed, per
-///      fight, to mark exactly one phase transition (by debuting, or by an existing one changing
-///      targetable state - see <see cref="VerifiedPhaseOpeners.OpenerSignal"/>) - falling back
-///      to a debounced heuristic (targetable enemy carrying the most max HP changes to one not
-///      yet seen this pull) for the transitions that data doesn't cover, most often a boss that
-///      keeps its NPC id and only changes moveset.
-///   2. Cast/hit matching against authored <see cref="BossAction.GameActionId"/>s
-///      (<see cref="PollCasts"/>, <see cref="OnActionUsed"/>). Finer-grained, but only covers
-///      whatever fraction of the fight's boss actions have an id authored.
+/// Two sync tiers, tried in order. First, phase advance from boss identity
+/// (<see cref="DetectPhaseAdvance"/>) - exact where <see cref="VerifiedPhaseOpeners"/> has a
+/// verified id for the transition (a debut, or a targetable-state change - see
+/// <see cref="VerifiedPhaseOpeners.OpenerSignal"/>), otherwise a debounced heuristic: whichever
+/// targetable enemy carries the most max HP, once that changes to something new this pull.
+/// Second, cast/hit matching against authored <see cref="BossAction.GameActionId"/>s
+/// (<see cref="PollCasts"/>, <see cref="OnActionUsed"/>) - only covers whatever fraction of the
+/// fight's boss actions actually have an id authored.
 ///
-/// A third tier - crossing an authored HP percentage, for the same same-actor transformations
-/// tier 1's heuristic fallback also can't always resolve confidently - is not implemented. It
-/// would need a per-phase threshold authored per fight, which nothing in this repo derives.
+/// There's a third tier that doesn't exist: crossing an authored HP percentage, for a same-actor
+/// transformation neither of the above can resolve. Would need a per-phase threshold authored
+/// per fight, and nothing here derives that yet.
 /// </summary>
 public sealed class FightTracker : IDisposable
 {
-    // How far the clock may be off and still be treated as drift to be nudged away rather than
-    // a phase jump. Sized to comfortably exceed normal kill-speed variance within a phase.
+    // Clock can be off by this much and it still counts as drift - nudge it, don't treat it as a
+    // phase jump. Padded well past normal kill-speed variance within a phase.
     private const float DriftWindow = 5f;
 
-    // A recognised boss action further than DriftWindow from the clock is treated as a jump
-    // (phase skipped, plugin loaded mid-fight). Bounded so a stray match can't fling the clock
-    // across the whole fight.
+    // Past DriftWindow a recognized boss action counts as a jump instead (skipped phase, plugin
+    // loaded mid-fight). Capped so one stray match can't send the clock flying across the fight.
     private const float MaxJump = 600f;
 
     private readonly ICondition condition;
     private readonly IObjectTable objects;
     private readonly IDutyState dutyState;
+    private readonly IClientState clientState;
     private readonly IPluginLog log;
     private readonly ActionWatcher actions;
     private readonly TimelineClock clock;
@@ -49,35 +46,36 @@ public sealed class FightTracker : IDisposable
     private PlanContext? plan;
     private bool wasInCombat;
 
-    // Boss actions keyed by authored game action id. Maps to *every* occurrence, not just the
-    // first: repeated mechanics are the norm rather than the exception (52% of UMAD's boss
-    // actions share a name with another), and resolving one to a single entry would resync the
-    // clock to the wrong occurrence - see TrySync.
+    // Boss actions keyed by game action id - maps to every occurrence, not just the first.
+    // Repeated mechanics are the norm here (52% of UMAD's boss actions share a name with another
+    // one), so collapsing to a single entry would resync the clock to the wrong occurrence half
+    // the time. See TrySync.
     private Dictionary<uint, List<BossAction>> byActionId = [];
 
-    // Dedupe: a cast stays visible on the object table for many frames, and an action effect can
-    // arrive for the same action across several targets. Both would otherwise resync repeatedly.
+    // A cast stays on the object table for several frames, and one action effect fans out across
+    // several targets - without this both would resync repeatedly for the same real event.
     private readonly Dictionary<ulong, uint> lastCastPerCaster = [];
     private (uint ActionId, float At) lastEffect;
 
-    // Tier 1 state. committedTopHpId is the NPC id "locked in" as the current boss identity,
-    // after PhaseAdvanceDebounce; seenCommittedIds is every id that has ever been committed this
-    // pull. pendingId/pendingSince track a candidate that has not yet held the top-HP spot long
-    // enough to trust - see DetectPhaseAdvance. All reset per pull.
+    // Tier 1 bookkeeping. committedTopHpId is whichever NPC id is "locked in" as the current
+    // boss, set once PhaseAdvanceDebounce elapses; seenCommittedIds is everything that's held
+    // that title this pull. pendingId/pendingSince track a candidate that hasn't held it long
+    // enough to trust yet - see DetectPhaseAdvance. All of it resets every pull.
     private uint? committedTopHpId;
     private readonly HashSet<uint> seenCommittedIds = [];
     private uint? pendingId;
     private float pendingSince;
 
-    // Per-GameObjectId, for opener-matched NPCs: previous IsTargetable (detects the
-    // BecomesTargetable edge) and MaxHp last seen while targetable (lets HealsAndBecomesTargetable
-    // tell a real kill/heal apart from a same-pool interrupt). Clears with the rest of pull state.
+    // Per GameObjectId, for whatever NPC last matched an opener: was it targetable last time we
+    // checked (BecomesTargetable needs the edge, not the level), and what was its max HP while
+    // targetable (HealsAndBecomesTargetable needs to tell a real kill-and-heal apart from just an
+    // interrupt). Clears with everything else per pull.
     private readonly Dictionary<ulong, bool> lastOpenerTargetable = [];
     private readonly Dictionary<ulong, uint> lastOpenerTargetableMaxHp = [];
 
-    // How long a new top-HP identity must persist before it is trusted as a real phase
-    // transition rather than an add that briefly outHPs the boss. A real transition holds the
-    // title for the rest of the phase; a stray add spike does not survive this window.
+    // How long a new top-HP NPC has to hold the title before it counts as a real transition. A
+    // real one holds it for the rest of the phase; an add that briefly outHPs the boss doesn't
+    // survive this long.
     private const float PhaseAdvanceDebounce = 1.5f;
 
     public string? LastSyncDescription { get; private set; }
@@ -88,6 +86,7 @@ public sealed class FightTracker : IDisposable
         ICondition condition,
         IObjectTable objects,
         IDutyState dutyState,
+        IClientState clientState,
         IPluginLog log,
         ActionWatcher actions,
         TimelineClock clock,
@@ -96,6 +95,7 @@ public sealed class FightTracker : IDisposable
         this.condition = condition;
         this.objects = objects;
         this.dutyState = dutyState;
+        this.clientState = clientState;
         this.log = log;
         this.actions = actions;
         this.clock = clock;
@@ -153,12 +153,18 @@ public sealed class FightTracker : IDisposable
             wasInCombat = inCombat;
             if (inCombat && config.AutoStartOnCombat && clock.State == ClockState.Stopped)
             {
-                plan.ResetRun();
-                // Per-pull dedupe: without this, a pull whose first cast (or first boss) happens
-                // to match whatever the previous pull ended on would be skipped as a repeat.
-                ResetPullState();
-                clock.Start();
-                LastSyncDescription = "started on combat";
+                if (ZoneMatchesLoadedPlan())
+                {
+                    // Without this, a pull whose first cast (or first boss) happens to match
+                    // whatever the last pull ended on gets skipped as a repeat.
+                    ResetPullState();
+                    clock.Start();
+                    LastSyncDescription = "started on combat";
+                }
+                else
+                {
+                    LastSyncDescription = "combat started, but zone doesn't match this plan - not auto-starting";
+                }
             }
             else if (!inCombat && config.AutoStopOnCombatEnd)
             {
@@ -173,17 +179,28 @@ public sealed class FightTracker : IDisposable
     }
 
     /// <summary>
-    /// Tier 1: advances the clock to the next authored phase from boss identity, one object-
-    /// table pass doing double duty for two signals of differing confidence. The primary signal
-    /// is <see cref="VerifiedPhaseOpeners"/> - trusted immediately, no debounce, since it's
-    /// already cross-pull verified. The fallback is a debounced heuristic (targetable enemy
-    /// carrying the most max HP changes to one not yet seen this pull), for transitions the
-    /// verified table doesn't cover - most often a boss that keeps its NPC id and only changes
-    /// moveset (UMAD's Kefka -> God Kefka).
+    /// Has the loaded plan been used in this territory before? Checks
+    /// <see cref="Configuration.PlanByTerritory"/> - same record the zone-in prompt reads and
+    /// writes, see Plugin.OnPlanLoaded. Always true if
+    /// <see cref="Configuration.RequireZoneMatchToAutoStart"/> is off.
+    /// </summary>
+    private bool ZoneMatchesLoadedPlan()
+    {
+        if (!config.RequireZoneMatchToAutoStart) return true;
+        return config.PlanByTerritory.TryGetValue(clientState.TerritoryType, out var code)
+            && string.Equals(code, plan!.Plan.Code, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Tier 1. One pass over the object table doing double duty: check the expected
+    /// <see cref="VerifiedPhaseOpeners"/> entry first (trusted the instant it fires, no
+    /// debounce, it's already cross-pull verified), and track the heuristic's top-HP candidate
+    /// as a fallback for whatever transition doesn't have one - usually a boss that keeps its
+    /// NPC id and just changes moveset (UMAD's Kefka -> God Kefka).
     /// </summary>
     private void DetectPhaseAdvance()
     {
-        if (plan!.Fight.Phases.Count == 0 || !config.AllowPhaseJump) return;
+        if (plan!.Fight.Phases.Count == 0) return;
 
         var currentIdx = plan.PhaseIndexAt(clock.Time);
         var nextIdx = currentIdx + 1;
@@ -202,15 +219,15 @@ public sealed class FightTracker : IDisposable
             if (obj is not IBattleNpc npc) continue;
             if (npc.IsDead) continue;
 
-            // Checked against every live NPC, not restricted to Combatant/targetable - a future
-            // ally opener (e.g. DSR's Alphinaud/Haurchefant) would report as NpcPartyMember, and
-            // restricting this would make such an entry silently unreachable.
+            // Checked against every live NPC, not just Combatant/targetable ones - a future ally
+            // opener (DSR's Alphinaud/Haurchefant are real candidates) would show up as
+            // NpcPartyMember, and this would silently never reach it otherwise.
             if (expected is { } eo && npc.BaseId == eo.BaseId)
             {
-                // Recorded regardless of whether this opener fires, so a later BecomesTargetable
-                // or HealsAndBecomesTargetable entry for this same BaseId (once nextIdx moves
-                // past this one) has an accurate "was it targetable, and with how much HP, last
-                // time we looked" to compare against.
+                // Recorded either way, fired or not - so if a later BecomesTargetable or
+                // HealsAndBecomesTargetable entry for this same BaseId comes up once nextIdx
+                // moves past this one, it has an honest "was this targetable, and at what HP,
+                // last time" to compare against.
                 var wasTargetable = lastOpenerTargetable.TryGetValue(npc.GameObjectId, out var w) && w;
                 var lastTargetableMaxHp = lastOpenerTargetableMaxHp.TryGetValue(npc.GameObjectId, out var mh)
                     ? mh : (uint?)null;
@@ -231,29 +248,27 @@ public sealed class FightTracker : IDisposable
                     AdvanceToPhase(nextIdx, $"phase advance ({plan.Fight.Phases[nextIdx].Name})", npc.BaseId);
                     return;
                 }
-                continue; // matched the opener's BaseId but hasn't fired yet - not a heuristic candidate
+                continue; // matched the id, hasn't fired - not a heuristic candidate either way
             }
 
-            // Heuristic candidate: targetable Combatants only, since broadening this to allies,
-            // pets, or untargetable objects would pollute "highest max HP enemy" with irrelevant
-            // values.
+            // Heuristic candidates are targetable Combatants only - let allies, pets, or
+            // untargetable stuff in and "highest max HP enemy" stops meaning anything.
             if (!npc.IsTargetable || npc.BattleNpcKind != BattleNpcSubKind.Combatant) continue;
             if (npc.MaxHp > bestHp) { bestHp = npc.MaxHp; bestForHeuristic = npc; }
         }
 
-        // A verified opener is expected for this transition but has not fired yet: don't let the
-        // heuristic guess in its place, since that would trade an exact signal for a noisier one
-        // for no reason.
+        // A verified opener's expected here and just hasn't fired yet - don't let the heuristic
+        // guess in its place, that's trading an exact signal for a noisy one for nothing.
         if (expected != null) { pendingId = null; return; }
 
         DetectPhaseAdvanceHeuristic(bestForHeuristic);
     }
 
     /// <param name="bossId">
-    /// The boss id, when known (verified-id path only - the heuristic path already updated this
-    /// bookkeeping itself, so passes null). Keeps the heuristic's state consistent regardless of
-    /// which tier triggered the jump, so it can't independently "rediscover" the same boss and
-    /// fire a second, redundant advance.
+    /// The boss id, if this came from the verified-id path (the heuristic path already updated
+    /// its own bookkeeping, so passes null). Keeping this in sync either way stops the heuristic
+    /// from "rediscovering" the boss a verified id just confirmed and firing a second, redundant
+    /// advance.
     /// </param>
     private void AdvanceToPhase(int phaseIdx, string reason, uint? bossId = null)
     {
@@ -272,12 +287,13 @@ public sealed class FightTracker : IDisposable
         if (best == null) { pendingId = null; return; }
 
         var id = best.BaseId;
-        if (id == committedTopHpId) { pendingId = null; return; } // steady state
+        if (id == committedTopHpId) { pendingId = null; return; } // already the current boss
 
         if (pendingId != id)
         {
-            // A new candidate for the top-HP spot: start (or restart) the debounce clock rather
-            // than acting immediately, so a brief add spike cannot commit a false transition.
+            // New candidate for top HP - start (or restart) the debounce rather than acting
+            // right away, so an add that briefly spikes past the boss doesn't commit a false
+            // transition.
             pendingId = id;
             pendingSince = clock.Time;
             return;
@@ -287,8 +303,8 @@ public sealed class FightTracker : IDisposable
         var wasFirstSighting = committedTopHpId == null;
         committedTopHpId = id;
         pendingId = null;
-        if (!seenCommittedIds.Add(id)) return; // held the title earlier this pull already
-        if (wasFirstSighting) return; // the pull's starting boss, not a transition
+        if (!seenCommittedIds.Add(id)) return; // already held the title once this pull
+        if (wasFirstSighting) return; // that's just the pull's starting boss, not a transition
 
         var currentIdx = plan!.PhaseIndexAt(clock.Time);
         var nextIdx = currentIdx + 1;
@@ -298,8 +314,8 @@ public sealed class FightTracker : IDisposable
     }
 
     /// <summary>
-    /// Scan visible hostiles for an in-progress cast we recognise. Uses the game's own cast
-    /// progress so the resync lands on the true hit time rather than the authored cast length.
+    /// Scans for a cast in progress we recognize. Uses the game's own cast progress rather than
+    /// the authored cast length, so the resync lands on the true hit time.
     /// </summary>
     private void PollCasts()
     {
@@ -326,51 +342,26 @@ public sealed class FightTracker : IDisposable
     private void OnActionUsed(ActionUsedEvent ev)
     {
         if (plan == null) return;
-
-        if (ev.IsLocalPlayer)
-        {
-            MarkPressed(ev.ActionId);
-            return;
-        }
-
         if (clock.State != ClockState.Running || !config.SyncFromCasts) return;
 
-        // One action effect fans out per target; collapse repeats of the same id in a short window.
+        // One action effect fans out per target - collapse repeats of the same id within a
+        // short window, or this resyncs once per target hit instead of once per cast.
         if (lastEffect.ActionId == ev.ActionId && clock.Time - lastEffect.At < 1.5f) return;
 
         if (!byActionId.TryGetValue(ev.ActionId, out var candidates)) return;
         lastEffect = (ev.ActionId, clock.Time);
 
-        // An effect means the hit has landed now, so the clock should read the action's own time.
+        // The hit's landed by the time we see this, so the clock should just read the action's
+        // own time.
         TrySync(candidates, 0f, "hit");
     }
 
-    /// <summary>Tick off a planned mitigation the local player actually pressed.</summary>
-    private void MarkPressed(uint gameActionId)
-    {
-        // Only while the clock runs: with it stopped, clock.Time is 0 and every press would be
-        // attributed to whichever mitigation happens to sit earliest in the plan.
-        if (plan == null || config.LocalPlayerId == null || clock.State != ClockState.Running) return;
-
-        var candidates = plan.ForPlayer(config.LocalPlayerId)
-            .Where(m => m.GameActionId == gameActionId && !m.Pressed)
-            .ToList();
-        if (candidates.Count == 0) return;
-
-        // Attribute the press to the planned use it is nearest to in time, so pressing an
-        // ability early does not consume the slot intended for a much later use.
-        var best = candidates.MinBy(m => Math.Abs(m.StartTime - clock.Time))!;
-        best.Pressed = true;
-        best.PressedAt = clock.Time;
-    }
-
     /// <summary>
-    /// Resyncs the clock to one of a mechanic's occurrences.
+    /// Resyncs to one occurrence of a mechanic that might repeat through the fight.
     ///
-    /// Which one matters: a mechanic repeats through a fight (UMAD's Thunder III lands five
-    /// times, 479s to 638s), so the occurrence is chosen as the one nearest the current clock
-    /// rather than the first authored. Picking the first would read the second Thunder III as
-    /// being 58s "late" and drag the clock backwards into the previous phase.
+    /// Picking the one nearest the current clock matters - UMAD's Thunder III lands five times,
+    /// 479s to 638s, and always picking the first authored occurrence would read the second one
+    /// as 58s "late" and drag the clock backward into the previous phase.
     /// </summary>
     /// <param name="candidates">Every authored occurrence of the observed mechanic.</param>
     /// <param name="leadTime">Seconds until the hit lands - remaining cast time, or 0 for a hit.</param>
@@ -388,7 +379,7 @@ public sealed class FightTracker : IDisposable
         var expected = best.Time - leadTime;
         var source = $"{kind} {best.Name}";
 
-        if (Math.Abs(bestDelta) < 0.15f) return; // already within noise; leave the clock alone
+        if (Math.Abs(bestDelta) < 0.15f) return; // close enough, leave it alone
 
         if (Math.Abs(bestDelta) <= DriftWindow)
         {
@@ -397,7 +388,7 @@ public sealed class FightTracker : IDisposable
             return;
         }
 
-        if (config.AllowPhaseJump && Math.Abs(bestDelta) <= MaxJump)
+        if (Math.Abs(bestDelta) <= MaxJump)
         {
             clock.SeekTo(expected, countAsDrift: true);
             LastSyncDescription = $"jumped to {source} ({bestDelta:+0.0;-0.0}s)";

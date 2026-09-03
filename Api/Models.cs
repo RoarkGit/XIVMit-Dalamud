@@ -4,7 +4,7 @@ namespace XIVMit.Api;
 
 // DTOs mirroring @xivmit/shared (shared/index.d.ts in the XIVMit repo). Only the fields this
 // plugin actually reads are declared; System.Text.Json ignores the rest. Everything here is
-// additive-safe: a field the server stops sending deserialises to null/default rather than
+// additive-safe: a field the server stops sending deserializes to null/default rather than
 // throwing, which matches the API's own additive-change contract.
 
 public sealed class Ability
@@ -19,7 +19,7 @@ public sealed class Ability
     [JsonPropertyName("type")] public string Type { get; set; } = "";
 
     // The FFXIV game action id. Present for ~87% of abilities; the ones without simply
-    // can't be icon-rendered or press-detected yet.
+    // can't be icon-rendered yet.
     [JsonPropertyName("abilityId")] public uint? GameActionId { get; set; }
 
     [JsonPropertyName("replaces")] public string? Replaces { get; set; }

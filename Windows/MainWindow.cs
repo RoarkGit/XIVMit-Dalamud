@@ -80,7 +80,7 @@ public sealed class MainWindow : Window, IDisposable
         // The title bar is the largest single piece of chrome; dropping it is most of what
         // overlay mode buys. ImGui still moves the window from a drag anywhere in the body.
         // No resize corner at all in overlay mode: it IS an overlay, and a grip hanging over the
-        // game reads as a stray artefact even when its colours are cleared.
+        // game reads as a stray artifact even when its colors are cleared.
         if (Overlay) flags |= ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize;
         Flags = flags;
 
@@ -92,7 +92,7 @@ public sealed class MainWindow : Window, IDisposable
             // Overlay reads as an overlay: the window is transparent so the bars sit on the game.
             // Buttons keep their own fill and border; bare text gets an outline instead of a
             // panel (see OverlayText). The window border goes too, since an outline around
-            // nothing looks like a stray artefact.
+            // nothing looks like a stray artifact.
             overlayPad = ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(6, 5))
                 .Push(ImGuiStyleVar.WindowBorderSize, 0f)
                 .Push(ImGuiStyleVar.ChildBorderSize, 0f);
@@ -132,6 +132,10 @@ public sealed class MainWindow : Window, IDisposable
             DrawPlanBar();
             ImGui.Separator();
         }
+
+        // Ahead of everything else, and independent of Overlay/empty-state: a duty change can
+        // happen at any time, including with no plan loaded at all or while overlay is active.
+        DrawZonePrompt();
 
         if (ctx == null)
         {
@@ -206,6 +210,23 @@ public sealed class MainWindow : Window, IDisposable
         draw.ChannelsMerge();
     }
 
+    /// <summary>
+    /// Offers to load the plan last used in the duty just entered. Re-checked every frame via
+    /// Plugin.PendingZonePlanCode rather than snapshotted once, so it disappears on its own the
+    /// instant its plan loads by any route (not just its own Load button) - see the note in
+    /// Plugin.OnPlanLoaded.
+    /// </summary>
+    private void DrawZonePrompt()
+    {
+        if (plugin.PendingZonePlanCode == null) return;
+
+        OverlayText(Theme.Amber, $"Load {plugin.PendingZonePlanLabel} for this duty?");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Load##zoneprompt")) plugin.LoadPendingZonePlan();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("x##zoneprompt")) plugin.DismissZonePrompt();
+    }
+
     private void DrawNoRosterRow()
     {
         ImGui.Spacing();
@@ -260,7 +281,6 @@ public sealed class MainWindow : Window, IDisposable
         var draw = ImGui.GetWindowDrawList();
         var dt = c.Time - t;
         var role = Theme.ForJob(c.Mits[0].Player.Job);
-        var allPressed = c.Mits.All(m => m.Pressed);
         var end = origin + new Vector2(width, BarHeight);
 
         // The bar drains as its moment approaches, emptying exactly at zero.
@@ -270,36 +290,34 @@ public sealed class MainWindow : Window, IDisposable
         // Semi-opaque so the drained portion still contrasts against whatever is behind the
         // overlay, without going back to a solid panel.
         draw.AddRectFilled(origin, end, Theme.U32(Theme.Card, 0.78f), 3f);
-        if (!allPressed && frac > 0f)
+        if (frac > 0f)
             draw.AddRectFilled(origin, new Vector2(origin.X + width * frac, end.Y),
                 Theme.U32(role.Fill, due ? 0.9f : 0.55f), 3f);
-        draw.AddRectFilled(origin, new Vector2(origin.X + PipWidth, end.Y),
-            Theme.U32(role.Border, allPressed ? 0.35f : 1f), 3f);
-        if (due && !allPressed)
+        draw.AddRectFilled(origin, new Vector2(origin.X + PipWidth, end.Y), Theme.U32(role.Border), 3f);
+        if (due)
             draw.AddRect(origin, end, Theme.U32(role.Border), 3f, ImDrawFlags.None, 1.5f);
 
         var textY = (BarHeight - ImGui.GetTextLineHeight()) * 0.5f;
-        var textColor = allPressed ? Theme.Text3 : Theme.Text;
 
         var x = PipWidth + 5f;
         var iconSize = BarHeight - 6f;
         foreach (var m in c.Mits.Take(4))
         {
             ImGui.SetCursorScreenPos(origin + new Vector2(x, 3f));
-            DrawIcon(m, iconSize, m.Pressed ? 0.35f : 1f);
+            DrawIcon(m, iconSize);
             x += iconSize + 2f;
         }
 
         // Countdown right-aligned, so the numbers form a column instead of drifting with names.
-        var label = allPressed ? "done" : due ? "NOW" : $"{dt:0.0}s";
+        var label = due ? "NOW" : $"{dt:0.0}s";
         var lw = ImGui.CalcTextSize(label).X;
         ImGui.SetCursorScreenPos(new Vector2(end.X - lw - 7f, origin.Y + textY));
-        ImGui.TextColored(allPressed ? Theme.Green : textColor, label);
+        ImGui.TextColored(Theme.Text, label);
 
         ImGui.SetCursorScreenPos(origin + new Vector2(x + 4f, textY));
         var name = c.Mits.Count == 1 ? c.Mits[0].DisplayName : string.Join(", ", c.Mits.Select(m => m.DisplayName));
         var avail = end.X - (origin.X + x + 4f) - lw - 14f;
-        if (ImGui.CalcTextSize(name).X <= avail) ImGui.TextColored(textColor, name);
+        if (ImGui.CalcTextSize(name).X <= avail) ImGui.TextColored(Theme.Text, name);
 
         if (ImGui.IsWindowHovered() && ImGui.IsMouseHoveringRect(origin, end)) hoveredCluster = c;
     }
@@ -310,15 +328,15 @@ public sealed class MainWindow : Window, IDisposable
     /// dropped is the between-sessions configuration (plan bar, settings, sync readout), not the
     /// controls actually reached for mid-pull.
     /// </summary>
-    // Pixel size for the overlay clock/phase readout, rasterised at this size rather than
+    // Pixel size for the overlay clock/phase readout, rasterized at this size rather than
     // scaled up from the default (see ScaledFont). Larger than the rest of the UI: this line
     // sits directly on the game rather than on a panel, and is meant to be read at a glance
     // mid-pull. Fixed rather than user-configurable: 22px was landed on by trial against the
     // real in-game AXIS font (see HeaderTextYNudge below for why that took several tries).
     private const float HeaderTextPx = 22f;
 
-    // Manual correction on top of the computed baseline centring in DrawOverlayHeader. Dear
-    // ImGui does not expose a font's cap height, so that centring estimates it as a ratio of
+    // Manual correction on top of the computed baseline centering in DrawOverlayHeader. Dear
+    // ImGui does not expose a font's cap height, so that centering estimates it as a ratio of
     // Ascent (capHeightRatio below) - an approximation, confirmed against the real rendered
     // AXIS font to need this fixed -2px nudge to land exactly.
     private const float HeaderTextYNudge = -2f;
@@ -329,7 +347,7 @@ public sealed class MainWindow : Window, IDisposable
         var style = ImGui.GetStyle();
         var px = HeaderTextPx;
 
-        // Centre the row by hand: ImGui top-aligns items on a line, which leaves the buttons
+        // Center the row by hand: ImGui top-aligns items on a line, which leaves the buttons
         // and the larger readout visibly out of step.
         //
         // Deliberately NOT using GetTextLineHeight() (== ImFont.FontSize) for this: FontSize is
@@ -337,11 +355,11 @@ public sealed class MainWindow : Window, IDisposable
         // Ascent/Descent (confirmed from Dear ImGui's own font-bake source - FontSize is a plain
         // assignment from the requested size, not derived from the metrics at all). AXIS is a
         // CJK-capable font, so its real ascent/descent routinely run well past the nominal size,
-        // and centring against FontSize was off by exactly that gap - worse the bigger the size
+        // and centering against FontSize was off by exactly that gap - worse the bigger the size
         // requested. Ascent is reliable: Dear ImGui's own glyph placement does
         // `pos.y += Ascent` to go from box-top to baseline, so it is unambiguously the top-to-
         // baseline distance in screen pixels. Our strings (digits, "P3") have no descenders, so
-        // their ink spans ~[boxTop, boxTop+Ascent]; centre that span, not the fuller line box
+        // their ink spans ~[boxTop, boxTop+Ascent]; center that span, not the fuller line box
         // that also reserves a descender gutter our text never uses.
         float ascent, descentMag;
         using (plugin.HeaderFont.Push(px))
@@ -360,7 +378,7 @@ public sealed class MainWindow : Window, IDisposable
         var btnY = rowCenter - btn * 0.5f;
 
         // Ascent alone overshoots: it reserves headroom for tall CJK glyphs that plain digits
-        // and "P1" never use, so centring on the full ascent puts the ink low. What we actually
+        // and "P1" never use, so centering on the full ascent puts the ink low. What we actually
         // want is the cap height, which Dear ImGui does not expose per-font, so this estimates
         // it as a ratio of ascent. The estimated cap height is BASELINE-anchored, not box-top-
         // anchored: digit/letter ink sits flush against the baseline (bottom of the ascent
@@ -382,14 +400,10 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
         ImGui.SetCursorPosY(btnY);
-        if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop, sq))
-        {
-            clock.Stop();
-            ctx.ResetRun();
-        }
+        if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop, sq)) clock.Stop();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Stop and reset");
 
-        // Only the readout takes the larger font, and it is rasterised at that size rather than
+        // Only the readout takes the larger font, and it is rasterized at that size rather than
         // stretched from the default, so it stays sharp. Buttons keep the default metrics.
         using (plugin.HeaderFont.Push(px))
         {
@@ -418,7 +432,8 @@ public sealed class MainWindow : Window, IDisposable
         // Positioned at an exact target rather than clamped against the text to its left: the
         // clamp let a long phase name push the group until the buttons ran into each other.
         var hasPhases = ctx.Fight.Phases.Count > 0;
-        var group = hasPhases ? btn * 2 + style.ItemSpacing.X : btn;
+        var buttonCount = hasPhases ? 3 : 2; // [phase toggle?], lock, expand
+        var group = btn * buttonCount + style.ItemSpacing.X * (buttonCount - 1);
 
         ImGui.SameLine();
         ImGui.SetCursorPosX(ImGui.GetWindowWidth() - group - style.WindowPadding.X);
@@ -426,11 +441,23 @@ public sealed class MainWindow : Window, IDisposable
 
         if (hasPhases) { DrawPhaseToggle(ctx, sq); ImGui.SameLine(); ImGui.SetCursorPosY(btnY); }
 
+        // Same relative order as DrawPlanBar's toolbar (overlay-toggle, then lock), so the two
+        // controls don't appear to swap places between modes.
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Expand, sq)) ToggleOverlay();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Exit overlay mode");
+        ImGui.SameLine();
+        ImGui.SetCursorPosY(btnY);
+
+        var locked = plugin.Config.LockWindow;
+        if (ImGuiComponents.IconButton(locked ? FontAwesomeIcon.Lock : FontAwesomeIcon.LockOpen, sq))
+        {
+            plugin.Config.LockWindow = !locked;
+            plugin.Config.Save();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(locked ? "Unlock window position" : "Lock window position");
 
         if (!plugin.Tracker.HookActive)
-            OverlayText(Theme.Amber, "Press detection unavailable.");
+            OverlayText(Theme.Amber, "Hit-based sync unavailable.");
     }
 
     private void ToggleOverlay()
@@ -489,6 +516,15 @@ public sealed class MainWindow : Window, IDisposable
                 : "Overlay mode: clock and timeline only");
 
         ImGui.SameLine();
+        var locked = plugin.Config.LockWindow;
+        if (ImGuiComponents.IconButton(locked ? FontAwesomeIcon.Lock : FontAwesomeIcon.LockOpen, IconSq()))
+        {
+            plugin.Config.LockWindow = !locked;
+            plugin.Config.Save();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(locked ? "Unlock window position" : "Lock window position");
+
+        ImGui.SameLine();
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Cog, IconSq())) plugin.ToggleConfig();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Settings");
 
@@ -498,7 +534,8 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextColored(Theme.Text2, "Loading...");
                 break;
             case LoadStatus.Failed:
-                ImGui.TextColored(Theme.Red, $"Load failed: {plugin.Loader.Error}");
+                // Loader.Error is already a complete, friendly sentence - see PlanLoader.Friendly.
+                ImGui.TextColored(Theme.Red, plugin.Loader.Error);
                 break;
             case LoadStatus.Loaded when plugin.Loader.Context is { } c:
                 ImGui.TextColored(Theme.Text2,
@@ -559,11 +596,7 @@ public sealed class MainWindow : Window, IDisposable
         var icon = clock.State == ClockState.Running ? FontAwesomeIcon.Pause : FontAwesomeIcon.Play;
         if (ImGuiComponents.IconButton(icon, IconSq())) clock.Toggle();
         ImGui.SameLine();
-        if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop, IconSq()))
-        {
-            clock.Stop();
-            ctx.ResetRun();
-        }
+        if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop, IconSq())) clock.Stop();
 
         ImGui.SameLine();
         ImGui.AlignTextToFramePadding();
@@ -604,7 +637,7 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         if (!plugin.Tracker.HookActive)
-            ImGui.TextColored(Theme.Amber, "Press detection unavailable (hook failed).");
+            ImGui.TextColored(Theme.Amber, "Hit-based sync unavailable (hook failed).");
     }
 
     /// <summary>
@@ -926,16 +959,16 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     /// <summary>
-    /// Faint gridlines every 10s, labelled with the fight clock rather than a countdown.
+    /// Faint gridlines every 10s, labeled with the fight clock rather than a countdown.
     ///
     /// Anchored to absolute fight time, not to an offset from the clock, so the lines travel
     /// upward with the bars instead of hanging at fixed screen positions while content slides
-    /// past them. Line POSITIONS use the raw authored <c>abs</c> (unaffected by displayOffset -
-    /// position already accounts for the sync via t/viewTime, same as every mit bar). Only the
-    /// printed LABEL subtracts <paramref name="displayOffset"/>, so a line's number reads as what
-    /// it will really be by the (synced) combat clock rather than the raw authored constant - see
-    /// the note on displayOffset in <see cref="Draw"/>. Labels also run through DisplayTime, so a
-    /// fight with a checkpoint (DSR) reads the same here as it does in the plan on the web.
+    /// past them. Line POSITIONS use the raw authored <c>abs</c> - unaffected by displayOffset,
+    /// since position already accounts for the sync via t/viewTime, same as every mit bar. Only
+    /// the printed LABEL subtracts <paramref name="displayOffset"/>, so a line's number reads as
+    /// what it will really be by the synced combat clock, not the raw authored constant (see the
+    /// displayOffset note in <see cref="Draw"/>). Labels also run through DisplayTime, so a fight
+    /// with a checkpoint (DSR) reads the same here as it does in the plan on the web.
     /// </summary>
     private static void DrawTimeGrid(ImDrawListPtr draw, Vector2 origin, float right,
         float nowY, float span, float lookahead, float viewTime, PlanContext ctx, float displayOffset)
@@ -957,23 +990,18 @@ public sealed class MainWindow : Window, IDisposable
         var draw = ImGui.GetWindowDrawList();
         var end = origin + new Vector2(width, RowHeight);
         var dt = c.Time - t;
-        var allPressed = c.Mits.All(m => m.Pressed);
 
-        // Every cluster belongs to one player, so one role colour always applies.
+        // Every cluster belongs to one player, so one role color always applies.
         var role = Theme.ForJob(c.Mits[0].Player.Job);
 
-        // Imminent rows brighten; already-pressed rows recede. Everything else sits at the
-        // web app's resting block opacity.
-        var (fillAlpha, textColor) = allPressed
-            ? (0.22f, Theme.Text3)
-            : dt <= 0f ? (0.90f, Theme.Text)
+        // Imminent rows brighten. Everything else sits at the web app's resting block opacity.
+        var (fillAlpha, textColor) = dt <= 0f ? (0.90f, Theme.Text)
             : dt <= 10f ? (0.65f, Theme.Text)
             : (0.42f, role.Text);
 
         draw.AddRectFilled(origin, end, Theme.U32(role.Fill, fillAlpha), 3f);
-        draw.AddRectFilled(origin, new Vector2(origin.X + PipWidth, end.Y),
-            Theme.U32(role.Border, allPressed ? 0.4f : 1f), 3f);
-        if (dt <= 0f && !allPressed)
+        draw.AddRectFilled(origin, new Vector2(origin.X + PipWidth, end.Y), Theme.U32(role.Border), 3f);
+        if (dt <= 0f)
             draw.AddRect(origin, end, Theme.U32(role.Border), 3f, ImDrawFlags.None, 1.5f);
 
         var textY = (RowHeight - ImGui.GetTextLineHeight()) * 0.5f;
@@ -981,8 +1009,7 @@ public sealed class MainWindow : Window, IDisposable
         // Position now carries the timing, so the countdown is a secondary readout: dimmed,
         // and kept only because the exact number still matters when lining up a press.
         ImGui.SetCursorScreenPos(origin + new Vector2(PipWidth + 8f, textY));
-        if (allPressed) ImGui.TextColored(Theme.Green, "done");
-        else if (dt <= 0f) ImGui.TextColored(Theme.Text, "NOW");
+        if (dt <= 0f) ImGui.TextColored(Theme.Text, "NOW");
         else ImGui.TextColored(textColor with { W = 0.75f }, $"{dt:0.0}s");
 
         // Icons shrink to fit rather than overflow, so a 10-wide party cluster still lands
@@ -995,7 +1022,7 @@ public sealed class MainWindow : Window, IDisposable
         foreach (var m in c.Mits)
         {
             ImGui.SetCursorScreenPos(origin + new Vector2(x, (RowHeight - iconSize) * 0.5f));
-            DrawIcon(m, iconSize, m.Pressed ? 0.35f : 1f);
+            DrawIcon(m, iconSize);
             x += iconSize + IconGap;
         }
 
@@ -1033,13 +1060,13 @@ public sealed class MainWindow : Window, IDisposable
             var line = $"{TimelineClock.Format(ctx.DisplayTime(m.StartTime - displayOffset))}  {m.DisplayName}";
             if (m.Assignment.Target is { Length: > 0 } tgt)
                 line += $" \u2192 {(ctx.PlayersById.TryGetValue(tgt, out var tp) ? tp.Name ?? tp.Job : tgt)}";
-            ImGui.TextColored(m.Pressed ? Theme.Green : Theme.Text, line);
+            ImGui.TextColored(Theme.Text, line);
             if (m.Assignment.Note is { Length: > 0 } note)
                 ImGui.TextColored(Theme.Text2, $"    {note}");
         }
     }
 
-    private void DrawIcon(PlannedMit m, float size, float alpha)
+    private void DrawIcon(PlannedMit m, float size)
     {
         var dims = new Vector2(size, size);
 
@@ -1063,6 +1090,6 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        ImGui.Image(tex.Handle, dims, Vector2.Zero, Vector2.One, new Vector4(1, 1, 1, alpha));
+        ImGui.Image(tex.Handle, dims, Vector2.Zero, Vector2.One, Vector4.One);
     }
 }

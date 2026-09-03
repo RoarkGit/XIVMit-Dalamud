@@ -15,15 +15,11 @@ public sealed class PlannedMit
 
     public uint? GameActionId => Ability.GameActionId;
     public string DisplayName => Assignment.Label is { Length: > 0 } l ? l : Ability.Name;
-
-    /// <summary>Set once the ActionEffect hook observes this player actually pressing it.</summary>
-    public bool Pressed { get; set; }
-    public float? PressedAt { get; set; }
 }
 
 /// <summary>
 /// A loaded plan resolved against its fight and the relevant job ability lists. Immutable after
-/// construction apart from per-run press tracking, which <see cref="ResetRun"/> clears.
+/// construction.
 /// </summary>
 public sealed class PlanContext
 {
@@ -47,11 +43,11 @@ public sealed class PlanContext
     }
 
     /// <summary>
-    /// The absolute time that <paramref name="t"/>'s displayed clock is measured from. Mirrors
-    /// segmentOrigin() in the web client's gameUtils.ts: a checkpoint phase splits the fight into
+    /// The absolute time <paramref name="t"/>'s displayed clock is measured from - mirrors
+    /// segmentOrigin() in the web client's gameUtils.ts. A checkpoint phase splits the fight into
     /// independent segments whose clock restarts at 0:00 (DSR's Thordan transition is the only
-    /// case today). Stored times stay absolute everywhere, so this changes only what is shown -
-    /// without it the plugin would read 4:00 where the plan being followed reads 1:15.
+    /// case today); stored times stay absolute everywhere, so this only changes what's shown.
+    /// Skip it and the plugin reads 4:00 where the plan being followed reads 1:15.
     /// </summary>
     public float SegmentOrigin(float t)
     {
@@ -105,15 +101,6 @@ public sealed class PlanContext
     public static float EffectiveDuration(Ability ab, int maxLevel) =>
         ab.DurationUpgrade is { } up && maxLevel >= up.MinLevel ? up.Duration : ab.Duration;
 
-    public void ResetRun()
-    {
-        foreach (var m in Mits)
-        {
-            m.Pressed = false;
-            m.PressedAt = null;
-        }
-    }
-
     /// <summary>Mits belonging to one player, in time order.</summary>
     public IEnumerable<PlannedMit> ForPlayer(string playerId) =>
         Mits.Where(m => m.Player.Id == playerId);
@@ -127,16 +114,16 @@ public sealed class PlanContext
         Fight.Phases.FindIndex(p => t >= p.StartTime && t < p.EndTime);
 
     /// <summary>
-    /// The 1-based number a person would call <c>Fight.Phases[phaseIndex]</c> by, skipping
+    /// The 1-based number a person would actually call <c>Fight.Phases[phaseIndex]</c> - skips
     /// short scripted transitions (<see cref="Phase.Intermission"/> - FRU's Intermission, TOP's
-    /// P3 Transition) from the count. Those phases are still real for every other purpose
-    /// (StartTime/EndTime, sync, checkpoints) - only display numbering skips them, since a
-    /// player reading "P6" for what is really the fight's 5th phase reads as a bug.
+    /// P3 Transition) from the count. Those phases are still real everywhere else (StartTime/
+    /// EndTime, sync, checkpoints); only the display number skips them, since "P6" for what's
+    /// really the fight's 5th phase reads as a bug.
     ///
-    /// An intermission phase itself returns the number of the counting phase before it, since
-    /// it is not really its own "phase N" from a player's perspective - callers wanting to
-    /// label an intermission specially (its bare name, no "P{n}:" prefix) check
-    /// <c>Intermission</c> directly rather than relying on this number.
+    /// An intermission phase returns the number of the counting phase before it - it's not
+    /// really its own "phase N" to a player. A caller wanting to label an intermission
+    /// specially (its bare name, no "P{n}:" prefix) checks <c>Intermission</c> directly instead
+    /// of relying on this number.
     /// </summary>
     public int DisplayPhaseNumber(int phaseIndex)
     {

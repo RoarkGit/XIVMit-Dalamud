@@ -17,6 +17,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IObjectTable Objects { get; private set; } = null!;
     [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
@@ -40,6 +41,14 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<uint, ushort> iconCache = [];
     private float autoPickTimer;
 
+    /// <summary>
+    /// The zone-in load prompt's current offer, if any - a remembered plan for the territory just
+    /// entered, distinct from whatever (if anything) is already loaded. Null means no prompt is
+    /// showing. See <see cref="OnTerritoryChanged"/>.
+    /// </summary>
+    internal string? PendingZonePlanCode { get; private set; }
+    internal string? PendingZonePlanLabel { get; private set; }
+
     public Plugin()
     {
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -47,8 +56,8 @@ public sealed class Plugin : IDalamudPlugin
         Clock = new TimelineClock();
         Api = new XivMitApi();
         Loader = new PlanLoader(Api, Framework, Log);
-        Actions = new ActionWatcher(GameInterop, Objects, Log);
-        Tracker = new FightTracker(Condition, Objects, DutyState, Log, Actions, Clock, Config);
+        Actions = new ActionWatcher(GameInterop, Log);
+        Tracker = new FightTracker(Condition, Objects, DutyState, ClientState, Log, Actions, Clock, Config);
         HeaderFont = new ScaledFont(PluginInterface.UiBuilder.FontAtlas);
 
         Loader.Loaded += OnPlanLoaded;
@@ -67,6 +76,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleMain;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfig;
         Framework.Update += OnFrameworkUpdate;
+        ClientState.TerritoryChanged += OnTerritoryChanged;
 
         if (!string.IsNullOrWhiteSpace(Config.PlanCode))
             Loader.Load(Config.PlanCode);
@@ -78,6 +88,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMain;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
+        ClientState.TerritoryChanged -= OnTerritoryChanged;
 
         Loader.Loaded -= OnPlanLoaded;
 
@@ -107,7 +118,63 @@ public sealed class Plugin : IDalamudPlugin
         if (ctx == null) return;
 
         Config.RememberPlan(ctx.Plan.Code, ctx.Plan.Title, ctx.Fight.ShortName ?? ctx.Fight.Name);
+        // This is the one place every load path funnels through - typed in, recent list, or the
+        // zone prompt itself - so recording here means the remembered plan for a duty is always
+        // whichever was used there most recently. Gated on actually being in an instanced duty:
+        // recording an overworld territory (a housing district, a city, anywhere a plan might get
+        // loaded or tested outside real content) would let a later, unrelated combat pull there
+        // (a target dummy, anything) pass the zone-match check meant to guard against exactly that.
+        if (DutyState.ContentFinderCondition.RowId != 0)
+        {
+            Config.PlanByTerritory[ClientState.TerritoryType] = ctx.Plan.Code;
+            Config.Save();
+        }
         TryAutoPickPlayer(ctx);
+
+        // Whatever just loaded satisfies any pending zone-in offer for it, even if it was loaded
+        // some other way (typed the code manually, picked it from Recent) while the prompt sat
+        // there unanswered.
+        if (string.Equals(PendingZonePlanCode, ctx.Plan.Code, StringComparison.OrdinalIgnoreCase))
+            PendingZonePlanCode = null;
+    }
+
+    /// <summary>
+    /// Offers to load the plan last used in this territory, if it differs from whatever (if
+    /// anything) is already loaded. Cleared and re-evaluated on every zone change, so a stale
+    /// offer from the last duty never lingers into a new one.
+    /// </summary>
+    private void OnTerritoryChanged(uint territory)
+    {
+        PendingZonePlanCode = null;
+        PendingZonePlanLabel = null;
+
+        var remembered = Config.PlanByTerritory.TryGetValue(territory, out var code) && !string.IsNullOrWhiteSpace(code);
+
+        // Independent of the prompt below: a duty where the right plan is already loaded has
+        // nothing to prompt for, but should still surface the window rather than leave it closed.
+        if (remembered && Config.AutoOpenInSavedZones) mainWindow.IsOpen = true;
+
+        if (!remembered || !Config.PromptToLoadOnZoneIn) return;
+        if (string.Equals(Loader.Context?.Plan.Code, code, StringComparison.OrdinalIgnoreCase)) return;
+
+        PendingZonePlanCode = code;
+        PendingZonePlanLabel = Config.RecentPlans.FirstOrDefault(r =>
+            string.Equals(r.Code, code, StringComparison.OrdinalIgnoreCase))?.Label ?? code;
+        mainWindow.IsOpen = true;
+    }
+
+    internal void LoadPendingZonePlan()
+    {
+        if (PendingZonePlanCode is not { } code) return;
+        Config.PlanCode = code;
+        Config.Save();
+        Loader.Load(code);
+    }
+
+    internal void DismissZonePrompt()
+    {
+        PendingZonePlanCode = null;
+        PendingZonePlanLabel = null;
     }
 
     /// <summary>

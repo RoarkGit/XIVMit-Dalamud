@@ -55,7 +55,8 @@ public sealed class XivMitApi : IDisposable
             var body = await res.Content.ReadAsStringAsync(ct);
             throw new XivMitApiException(
                 $"{(int)res.StatusCode} {res.ReasonPhrase} from /{path}" +
-                (string.IsNullOrWhiteSpace(body) ? "" : $": {Truncate(body, 200)}"));
+                (string.IsNullOrWhiteSpace(body) ? "" : $": {Truncate(body, 200)}"),
+                res.StatusCode);
         }
 
         var value = await res.Content.ReadFromJsonAsync<T>(JsonOpts, ct);
@@ -66,4 +67,13 @@ public sealed class XivMitApi : IDisposable
         s.Length <= max ? s : string.Concat(s.AsSpan(0, max), "...");
 }
 
-public sealed class XivMitApiException(string message) : Exception(message);
+/// <summary>
+/// The technical message (status, path, response body snippet) is for the log only -
+/// <see cref="Core.PlanLoader"/> maps this to a user-facing message via <see cref="StatusCode"/>
+/// and the exception's type, never shows <c>Message</c> itself in the UI.
+/// </summary>
+public sealed class XivMitApiException(string message, System.Net.HttpStatusCode? statusCode = null)
+    : Exception(message)
+{
+    public System.Net.HttpStatusCode? StatusCode { get; } = statusCode;
+}

@@ -217,6 +217,7 @@ public sealed class FightTracker : IDisposable
         foreach (var obj in objects)
         {
             if (obj is not IBattleNpc npc) continue;
+            if (!npc.IsValid()) continue;
             if (npc.IsDead) continue;
 
             // Checked against every live NPC, not just Combatant/targetable ones - a future ally
@@ -322,6 +323,7 @@ public sealed class FightTracker : IDisposable
         foreach (var obj in objects)
         {
             if (obj is not IBattleNpc npc) continue;
+            if (!npc.IsValid()) continue;
             if (npc.BattleNpcKind != BattleNpcSubKind.Combatant) continue;
             if (!npc.IsCasting || npc.CastActionId == 0) continue;
 

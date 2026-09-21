@@ -32,12 +32,20 @@ public sealed class TimelineClock
 
     public event Action<float, float>? Resynced; // (from, to)
 
+    /// <summary>
+    /// A pull beginning - a manual press or an auto-start, either way. Deliberately not fired by
+    /// <see cref="SeekTo"/>, which also starts a stopped clock but as a mid-fight catch-up rather
+    /// than as the start of a pull.
+    /// </summary>
+    public event Action? Started;
+
     public void Start(float at = 0f)
     {
         Time = at;
         CombatTime = at;
         TotalDrift = 0f;
         State = ClockState.Running;
+        Started?.Invoke();
     }
 
     public void Pause() { if (State == ClockState.Running) State = ClockState.Paused; }

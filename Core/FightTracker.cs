@@ -163,7 +163,14 @@ public sealed class FightTracker : IDisposable
                 }
                 else
                 {
-                    LastSyncDescription = "combat started, but zone doesn't match this plan - not auto-starting";
+                    // Short enough to survive the header's right-aligned fit check, and the log
+                    // carries the detail: this is silent-by-design behaviour, so a bad zone
+                    // record (or an empty one) needs somewhere to show up.
+                    LastSyncDescription = "press play once to auto-start here";
+                    log.Info(
+                        $"XIVMit didn't auto-start: territory {clientState.TerritoryType} has no " +
+                        $"remembered plan matching {plan!.Plan.Code}. Start the clock by hand " +
+                        "once here and pulls after this one start on their own.");
                 }
             }
             else if (!inCombat && config.AutoStopOnCombatEnd)

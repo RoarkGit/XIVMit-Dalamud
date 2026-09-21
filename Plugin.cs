@@ -61,6 +61,7 @@ public sealed class Plugin : IDalamudPlugin
         HeaderFont = new ScaledFont(PluginInterface.UiBuilder.FontAtlas);
 
         Loader.Loaded += OnPlanLoaded;
+        Clock.Started += OnClockStarted;
 
         mainWindow = new MainWindow(this);
         configWindow = new ConfigWindow(this);
@@ -91,6 +92,7 @@ public sealed class Plugin : IDalamudPlugin
         ClientState.TerritoryChanged -= OnTerritoryChanged;
 
         Loader.Loaded -= OnPlanLoaded;
+        Clock.Started -= OnClockStarted;
 
         WindowSystem.RemoveAllWindows();
         mainWindow.Dispose();
@@ -120,15 +122,8 @@ public sealed class Plugin : IDalamudPlugin
         Config.RememberPlan(ctx.Plan.Code, ctx.Plan.Title, ctx.Fight.ShortName ?? ctx.Fight.Name);
         // This is the one place every load path funnels through - typed in, recent list, or the
         // zone prompt itself - so recording here means the remembered plan for a duty is always
-        // whichever was used there most recently. Gated on actually being in an instanced duty:
-        // recording an overworld territory (a housing district, a city, anywhere a plan might get
-        // loaded or tested outside real content) would let a later, unrelated combat pull there
-        // (a target dummy, anything) pass the zone-match check meant to guard against exactly that.
-        if (DutyState.ContentFinderCondition.RowId != 0)
-        {
-            Config.PlanByTerritory[ClientState.TerritoryType] = ctx.Plan.Code;
-            Config.Save();
-        }
+        // whichever was used there most recently.
+        RememberZonePlan(ctx.Plan.Code);
         TryAutoPickPlayer(ctx);
 
         // Whatever just loaded satisfies any pending zone-in offer for it, even if it was loaded
@@ -175,6 +170,42 @@ public sealed class Plugin : IDalamudPlugin
     {
         PendingZonePlanCode = null;
         PendingZonePlanLabel = null;
+    }
+
+    /// <summary>
+    /// Starting the clock by hand inside a duty is the other, previously missing half of what
+    /// <see cref="Configuration.RequireZoneMatchToAutoStart"/> promises. Loading a plan is
+    /// normally done before queueing, from a hub, where there is no duty to associate it with -
+    /// so recording on load alone learned nothing in the usual workflow, which left
+    /// <see cref="Configuration.PlanByTerritory"/> empty and auto-start permanently suppressed.
+    /// A manual press in the duty says "this plan, this pull, here" just as plainly as loading it
+    /// there does, so the first pull teaches it and every pull after auto-starts.
+    /// </summary>
+    private void OnClockStarted()
+    {
+        if (Loader.Context is { } ctx) RememberZonePlan(ctx.Plan.Code);
+    }
+
+    /// <summary>
+    /// Associates the current territory with a plan code, for the zone-in prompt and the
+    /// auto-start zone check to read back. Gated on actually being in an instanced duty:
+    /// recording an overworld territory (a housing district, a city, anywhere a plan might get
+    /// loaded or tested outside real content) would let a later, unrelated combat pull there (a
+    /// target dummy, anything) pass the zone-match check meant to guard against exactly that.
+    /// </summary>
+    private void RememberZonePlan(string code)
+    {
+        if (DutyState.ContentFinderCondition.RowId == 0) return;
+
+        // Every pull runs through here now, so skip the write (and the disk hit) once the pairing
+        // is already the one recorded.
+        var territory = ClientState.TerritoryType;
+        if (Config.PlanByTerritory.TryGetValue(territory, out var existing)
+            && string.Equals(existing, code, StringComparison.OrdinalIgnoreCase)) return;
+
+        Config.PlanByTerritory[territory] = code;
+        Config.Save();
+        Log.Info($"XIVMit remembered plan {code} for territory {territory} - pulls here auto-start now.");
     }
 
     /// <summary>

@@ -64,8 +64,9 @@ public sealed class ConfigWindow : Window, IDisposable
             }
             Hint("Skips auto-start if this plan hasn't been used in the current duty before, " +
                  "so combat starting elsewhere (a roulette, a different fight) doesn't " +
-                 "spuriously start the clock. Learns as you go - the first pull in a new duty " +
-                 "needs a manual press either way.");
+                 "spuriously start the clock. Learns as you go: start the clock by hand once " +
+                 "inside a duty (or load the plan while you're in there) and every pull after " +
+                 "that starts on its own.");
         }
 
         var autoStop = cfg.AutoStopOnCombatEnd;

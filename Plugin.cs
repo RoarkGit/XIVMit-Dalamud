@@ -274,7 +274,9 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (arg.Length > 0)
         {
-            Config.PlanCode = arg.ToUpperInvariant();
+            // Same extraction as the code box: a URL is just as likely to be pasted after the
+            // command as typed into the window.
+            Config.PlanCode = PlanCodeInput.Extract(arg);
             Config.Save();
             Loader.Load(Config.PlanCode);
             mainWindow.IsOpen = true;

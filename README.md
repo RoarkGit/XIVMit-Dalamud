@@ -13,8 +13,8 @@ memory features and the lock-window button are newer and still untested live.
 
 ## Features
 
-- **Loads a plan straight from xivmit.app.** Enter a plan code (the part after `?plan=` in the
-  URL) and your roster, mitigations, and fight timing show up in-game - no export step.
+- **Loads a plan straight from xivmit.app.** Paste a share URL or just its plan code, and your
+  roster, mitigations, and fight timing show up in-game - no export step.
 - **Starts and stops itself.** The clock starts when combat begins and stops on a wipe or clear,
   so there's nothing to remember to press.
 - **Stays in sync automatically.** As the fight actually plays out, the plugin watches for phase
@@ -51,10 +51,11 @@ jumping to (or manually correcting to) a specific phase.
 ## Usage
 
 - `/xivmit` opens the window
-- `/xivmit <plan-code>` loads a plan code directly
+- `/xivmit <plan-code-or-url>` loads a plan directly
 - `/xivmit overlay` toggles overlay mode
 
-The plan code is the part after `?plan=` in a xivmit.app URL.
+Both the command and the code box take a full xivmit.app share URL as well as a bare plan code
+(the part after `?plan=` in that URL, for example `UMAD-4C3ME5`).
 
 ## Installing
 

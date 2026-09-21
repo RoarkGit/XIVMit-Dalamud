@@ -489,7 +489,9 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawPlanBar()
     {
         ImGui.SetNextItemWidth(150);
-        if (ImGui.InputTextWithHint("##code", "PLAN-CODE", ref codeInput, 32,
+        // Buffer is sized for a pasted share URL, not for the code alone - at 32 the paste got
+        // silently clipped mid-URL and loaded whatever nonsense was left.
+        if (ImGui.InputTextWithHint("##code", "PLAN-CODE or URL", ref codeInput, 256,
                 ImGuiInputTextFlags.EnterReturnsTrue))
             LoadCode();
 
@@ -576,17 +578,23 @@ public sealed class MainWindow : Window, IDisposable
 
     private void LoadCode()
     {
-        plugin.Config.PlanCode = codeInput.Trim().ToUpperInvariant();
+        var code = PlanCodeInput.Extract(codeInput);
+        if (code.Length == 0) return;
+
+        // Put the extracted code back in the box, so a pasted URL collapses to the thing that was
+        // actually loaded rather than leaving the field scrolled into the middle of a long URL.
+        codeInput = code;
+        plugin.Config.PlanCode = code;
         plugin.Config.Save();
-        plugin.Loader.Load(plugin.Config.PlanCode);
+        plugin.Loader.Load(code);
     }
 
     private void DrawEmptyState()
     {
         ImGui.TextWrapped("Enter a plan code from xivmit.app to get started.");
         ImGui.Spacing();
-        ImGui.TextColored(Theme.Text2, "The code is the part after ?plan= in the URL,");
-        ImGui.TextColored(Theme.Text2, "for example UMAD-4C3ME5.");
+        ImGui.TextColored(Theme.Text2, "Paste the whole share URL if you like, or just");
+        ImGui.TextColored(Theme.Text2, "the code from it, for example UMAD-4C3ME5.");
     }
 
     private void DrawClockBar(PlanContext ctx)

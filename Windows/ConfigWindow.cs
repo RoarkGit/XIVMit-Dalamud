@@ -1,17 +1,13 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility.Raii;
-using Dalamud.Interface.Windowing;
-using XIVMit.Core;
+using XIVMit.Api;
 
 namespace XIVMit.Windows;
 
-public sealed class ConfigWindow : Window, IDisposable
+public sealed class ConfigWindow : ThemedWindow
 {
     private readonly Plugin plugin;
-    private IDisposable? colors;
-    private IDisposable? styles;
 
     public ConfigWindow(Plugin plugin) : base("XIVMit Settings###xivmit_config")
     {
@@ -20,48 +16,23 @@ public sealed class ConfigWindow : Window, IDisposable
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
-    public void Dispose() { }
-
-    public override void PreDraw()
-    {
-        colors = Theme.Push();
-        styles = Theme.PushStyle();
-    }
-
-    public override void PostDraw()
-    {
-        styles?.Dispose();
-        colors?.Dispose();
-        styles = null;
-        colors = null;
-    }
-
     public override void Draw()
     {
         var cfg = plugin.Config;
         var dirty = false;
 
         SeparatorText("Which player am I?");
-        DrawPlayerPicker(ref dirty);
+        dirty |= DrawPlayerPicker();
         Hint("Matched to your character automatically where possible.");
 
         SeparatorText("Automation");
 
-        var autoStart = cfg.AutoStartOnCombat;
-        if (ImGui.Checkbox("Start clock when combat begins", ref autoStart))
-        {
-            cfg.AutoStartOnCombat = autoStart;
-            dirty = true;
-        }
+        dirty |= Checkbox("Start clock when combat begins", cfg.AutoStartOnCombat, v => cfg.AutoStartOnCombat = v);
 
         using (ImRaii.Disabled(!cfg.AutoStartOnCombat))
         {
-            var zoneMatch = cfg.RequireZoneMatchToAutoStart;
-            if (ImGui.Checkbox("Only in this plan's zone", ref zoneMatch))
-            {
-                cfg.RequireZoneMatchToAutoStart = zoneMatch;
-                dirty = true;
-            }
+            dirty |= Checkbox("Only in this plan's zone", cfg.RequireZoneMatchToAutoStart,
+                v => cfg.RequireZoneMatchToAutoStart = v);
             Hint("Skips auto-start if this plan hasn't been used in the current duty before, " +
                  "so combat starting elsewhere (a roulette, a different fight) doesn't " +
                  "spuriously start the clock. Learns as you go: start the clock by hand once " +
@@ -69,47 +40,25 @@ public sealed class ConfigWindow : Window, IDisposable
                  "that starts on its own.");
         }
 
-        var autoStop = cfg.AutoStopOnCombatEnd;
-        if (ImGui.Checkbox("Stop clock on wipe or clear", ref autoStop))
-        {
-            cfg.AutoStopOnCombatEnd = autoStop;
-            dirty = true;
-        }
+        dirty |= Checkbox("Stop clock on wipe or clear", cfg.AutoStopOnCombatEnd, v => cfg.AutoStopOnCombatEnd = v);
 
-        var sync = cfg.SyncFromCasts;
-        if (ImGui.Checkbox("Resync from combat", ref sync))
-        {
-            cfg.SyncFromCasts = sync;
-            dirty = true;
-        }
+        dirty |= Checkbox("Resync from combat", cfg.SyncFromCasts, v => cfg.SyncFromCasts = v);
         Hint("Corrects clock drift when a recognized boss cast or hit is observed, or when " +
              "a new boss takes over as the fight's main target (advancing to the next phase).");
 
-        var zonePrompt = cfg.PromptToLoadOnZoneIn;
-        if (ImGui.Checkbox("Offer to load a plan on zone-in", ref zonePrompt))
-        {
-            cfg.PromptToLoadOnZoneIn = zonePrompt;
-            dirty = true;
-        }
+        dirty |= Checkbox("Offer to load a plan on zone-in", cfg.PromptToLoadOnZoneIn, v => cfg.PromptToLoadOnZoneIn = v);
         Hint("Remembers the last plan used in each duty and offers to reload it when you " +
              "zone back in, if a different (or no) plan is currently loaded.");
 
-        var zoneOpen = cfg.AutoOpenInSavedZones;
-        if (ImGui.Checkbox("Open window in remembered zones", ref zoneOpen))
-        {
-            cfg.AutoOpenInSavedZones = zoneOpen;
-            dirty = true;
-        }
+        dirty |= Checkbox("Open window in remembered zones", cfg.AutoOpenInSavedZones, v => cfg.AutoOpenInSavedZones = v);
         Hint("Opens the window on zone-in for a remembered duty, even with nothing to prompt for.");
 
         using (ImRaii.Disabled(cfg.PlanByTerritory.Count == 0))
         {
-            if (ImGui.Button("Forget remembered zones")) plugin.Config.ForgetZones();
+            if (ImGui.Button("Forget remembered zones")) cfg.ForgetZones();
             if (ImGui.IsItemHovered())
             {
-                // A floating tooltip has no "available width" of its own to wrap against the way
-                // in-window text does (it sizes to its content), so the wrap point needs setting
-                // explicitly - same reasoning as Hint, just a different mechanism to get there.
+                // Tooltips size to their content, so the wrap width has to be set explicitly.
                 using var tip = ImRaii.Tooltip();
                 ImGui.PushTextWrapPos(ImGui.GetFontSize() * 22f);
                 ImGui.TextUnformatted(cfg.PlanByTerritory.Count == 0
@@ -123,26 +72,10 @@ public sealed class ConfigWindow : Window, IDisposable
 
         SeparatorText("Display");
 
-        var look = cfg.LookaheadSeconds;
-        if (ImGui.SliderFloat("Lookahead", ref look, 10f, 120f, "%.0fs"))
-        {
-            cfg.LookaheadSeconds = look;
-            dirty = true;
-        }
+        dirty |= Slider("Lookahead", cfg.LookaheadSeconds, 10f, 120f, v => cfg.LookaheadSeconds = v);
+        dirty |= Slider("Keep after due", cfg.GraceSeconds, 0f, 20f, v => cfg.GraceSeconds = v);
 
-        var grace = cfg.GraceSeconds;
-        if (ImGui.SliderFloat("Keep after due", ref grace, 0f, 20f, "%.0fs"))
-        {
-            cfg.GraceSeconds = grace;
-            dirty = true;
-        }
-
-        var overlay = cfg.OverlayMode;
-        if (ImGui.Checkbox("Overlay mode", ref overlay))
-        {
-            cfg.OverlayMode = overlay;
-            dirty = true;
-        }
+        dirty |= Checkbox("Overlay mode", cfg.OverlayMode, v => cfg.OverlayMode = v);
         Hint("Draining countdown bars on a transparent window, reading as a game overlay.");
 
         if (plugin.Tracker.HookFailure is { } fail)
@@ -155,13 +88,13 @@ public sealed class ConfigWindow : Window, IDisposable
         if (dirty) cfg.Save();
     }
 
-    private void DrawPlayerPicker(ref bool dirty)
+    private bool DrawPlayerPicker()
     {
         var ctx = plugin.Loader.Context;
         if (ctx == null)
         {
             ImGui.TextColored(Theme.Text2, "Load a plan to pick your row.");
-            return;
+            return false;
         }
 
         var current = ctx.PlayersById.TryGetValue(plugin.Config.LocalPlayerId ?? "", out var p)
@@ -170,32 +103,42 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.SetNextItemWidth(-1);
         using var combo = ImRaii.Combo("##me", current);
-        if (!combo) return;
+        if (!combo) return false;
 
+        var changed = false;
         foreach (var player in ctx.Plan.Players)
         {
             if (!ImGui.Selectable(Describe(player), player.Id == plugin.Config.LocalPlayerId)) continue;
             plugin.Config.LocalPlayerId = player.Id;
-            dirty = true;
+            changed = true;
         }
+        return changed;
 
-        static string Describe(Api.Player p) =>
+        static string Describe(Player p) =>
             p.Name is { Length: > 0 } n ? $"{p.Job} - {n}" : p.Job;
     }
 
-    // TextWrapped, not manually-inserted "\n"s at a fixed character count: ImGui's font is
-    // proportional, so a fixed character count wraps to a different pixel width line to line
-    // (a run of "i"/"l" vs. "m"/"w") and reads as inconsistent rather than as a paragraph.
-    // Wrapping against the real available width is also the only way this survives the window
-    // being resized at all, which a hardcoded break point never does.
+    private static bool Checkbox(string label, bool value, Action<bool> set)
+    {
+        if (!ImGui.Checkbox(label, ref value)) return false;
+        set(value);
+        return true;
+    }
+
+    private static bool Slider(string label, float value, float min, float max, Action<float> set)
+    {
+        if (!ImGui.SliderFloat(label, ref value, min, max, "%.0fs")) return false;
+        set(value);
+        return true;
+    }
+
     private static void Hint(string text)
     {
         using var color = ImRaii.PushColor(ImGuiCol.Text, Theme.Text2);
         ImGui.TextWrapped(text);
     }
 
-    // This Dalamud build's ImGui bindings expose only the bare Separator(), so section
-    // headings are drawn by hand rather than with SeparatorText().
+    // These ImGui bindings have no SeparatorText().
     private static void SeparatorText(string label)
     {
         ImGui.Spacing();

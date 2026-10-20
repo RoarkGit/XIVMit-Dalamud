@@ -9,8 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Dalamud reads the plugin icon from images/icon.png next to the dll (512x512 PNG).
-         Rasterised from data/logo.svg in the XIVMit repo. -->
+    <!-- Plugin icon, rendered from data/logo.svg in the XIVMit repo. -->
     <Content Include="images\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

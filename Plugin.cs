@@ -41,11 +41,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<uint, ushort> iconCache = [];
     private float autoPickTimer;
 
-    /// <summary>
-    /// The zone-in load prompt's current offer, if any - a remembered plan for the territory just
-    /// entered, distinct from whatever (if anything) is already loaded. Null means no prompt is
-    /// showing. See <see cref="OnTerritoryChanged"/>.
-    /// </summary>
+    /// <summary>The remembered plan the zone-in prompt is offering, or null if none.</summary>
     internal string? PendingZonePlanCode { get; private set; }
     internal string? PendingZonePlanLabel { get; private set; }
 
@@ -95,8 +91,6 @@ public sealed class Plugin : IDalamudPlugin
         Clock.Started -= OnClockStarted;
 
         WindowSystem.RemoveAllWindows();
-        mainWindow.Dispose();
-        configWindow.Dispose();
 
         HeaderFont.Dispose();
         Tracker.Dispose();
@@ -107,11 +101,25 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
     }
 
+    internal void LoadPlan(string code)
+    {
+        Config.PlanCode = code;
+        Config.Save();
+        Loader.Load(code);
+    }
+
+    internal void ToggleOverlay()
+    {
+        Config.OverlayMode = !Config.OverlayMode;
+        Config.Save();
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
-        Clock.Update((float)framework.UpdateDelta.TotalSeconds);
+        var delta = (float)framework.UpdateDelta.TotalSeconds;
+        Clock.Update(delta);
         Tracker.Update();
-        RetryAutoPick((float)framework.UpdateDelta.TotalSeconds);
+        RetryAutoPick(delta);
     }
 
     private void OnPlanLoaded(PlanContext? ctx)
@@ -119,51 +127,35 @@ public sealed class Plugin : IDalamudPlugin
         Tracker.SetPlan(ctx);
         if (ctx == null) return;
 
-        Config.RememberPlan(ctx.Plan.Code, ctx.Plan.Title, ctx.Fight.ShortName ?? ctx.Fight.Name);
-        // This is the one place every load path funnels through - typed in, recent list, or the
-        // zone prompt itself - so recording here means the remembered plan for a duty is always
-        // whichever was used there most recently.
+        Config.RememberPlan(ctx.Plan.Code, ctx.Plan.Title, ctx.Fight.Label);
         RememberZonePlan(ctx.Plan.Code);
         TryAutoPickPlayer(ctx);
 
-        // Whatever just loaded satisfies any pending zone-in offer for it, even if it was loaded
-        // some other way (typed the code manually, picked it from Recent) while the prompt sat
-        // there unanswered.
-        if (string.Equals(PendingZonePlanCode, ctx.Plan.Code, StringComparison.OrdinalIgnoreCase))
+        // Loading the offered plan by any route answers the prompt.
+        if (PlanCodeInput.Same(PendingZonePlanCode, ctx.Plan.Code))
             PendingZonePlanCode = null;
     }
 
-    /// <summary>
-    /// Offers to load the plan last used in this territory, if it differs from whatever (if
-    /// anything) is already loaded. Cleared and re-evaluated on every zone change, so a stale
-    /// offer from the last duty never lingers into a new one.
-    /// </summary>
     private void OnTerritoryChanged(uint territory)
     {
-        PendingZonePlanCode = null;
-        PendingZonePlanLabel = null;
+        DismissZonePrompt();
 
-        var remembered = Config.PlanByTerritory.TryGetValue(territory, out var code) && !string.IsNullOrWhiteSpace(code);
+        if (!Config.PlanByTerritory.TryGetValue(territory, out var code) || string.IsNullOrWhiteSpace(code))
+            return;
 
-        // Independent of the prompt below: a duty where the right plan is already loaded has
-        // nothing to prompt for, but should still surface the window rather than leave it closed.
-        if (remembered && Config.AutoOpenInSavedZones) mainWindow.IsOpen = true;
+        if (Config.AutoOpenInSavedZones) mainWindow.IsOpen = true;
 
-        if (!remembered || !Config.PromptToLoadOnZoneIn) return;
-        if (string.Equals(Loader.Context?.Plan.Code, code, StringComparison.OrdinalIgnoreCase)) return;
+        if (!Config.PromptToLoadOnZoneIn) return;
+        if (PlanCodeInput.Same(Loader.Context?.Plan.Code, code)) return;
 
         PendingZonePlanCode = code;
-        PendingZonePlanLabel = Config.RecentPlans.FirstOrDefault(r =>
-            string.Equals(r.Code, code, StringComparison.OrdinalIgnoreCase))?.Label ?? code;
+        PendingZonePlanLabel = Config.RecentPlans.FirstOrDefault(r => PlanCodeInput.Same(r.Code, code))?.Label ?? code;
         mainWindow.IsOpen = true;
     }
 
     internal void LoadPendingZonePlan()
     {
-        if (PendingZonePlanCode is not { } code) return;
-        Config.PlanCode = code;
-        Config.Save();
-        Loader.Load(code);
+        if (PendingZonePlanCode is { } code) LoadPlan(code);
     }
 
     internal void DismissZonePrompt()
@@ -172,48 +164,32 @@ public sealed class Plugin : IDalamudPlugin
         PendingZonePlanLabel = null;
     }
 
-    /// <summary>
-    /// Starting the clock by hand inside a duty is the other, previously missing half of what
-    /// <see cref="Configuration.RequireZoneMatchToAutoStart"/> promises. Loading a plan is
-    /// normally done before queueing, from a hub, where there is no duty to associate it with -
-    /// so recording on load alone learned nothing in the usual workflow, which left
-    /// <see cref="Configuration.PlanByTerritory"/> empty and auto-start permanently suppressed.
-    /// A manual press in the duty says "this plan, this pull, here" just as plainly as loading it
-    /// there does, so the first pull teaches it and every pull after auto-starts.
-    /// </summary>
+    // Plans are usually loaded before queueing, outside any duty, so starting the clock is the
+    // main way a duty gets paired with a plan.
     private void OnClockStarted()
     {
         if (Loader.Context is { } ctx) RememberZonePlan(ctx.Plan.Code);
     }
 
     /// <summary>
-    /// Associates the current territory with a plan code, for the zone-in prompt and the
-    /// auto-start zone check to read back. Gated on actually being in an instanced duty:
-    /// recording an overworld territory (a housing district, a city, anywhere a plan might get
-    /// loaded or tested outside real content) would let a later, unrelated combat pull there (a
-    /// target dummy, anything) pass the zone-match check meant to guard against exactly that.
+    /// Pairs the current territory with a plan for the zone-in prompt and auto-start check.
+    /// Only inside duties, so a dummy pull in a housing ward can't satisfy the zone check later.
     /// </summary>
     private void RememberZonePlan(string code)
     {
         if (DutyState.ContentFinderCondition.RowId == 0) return;
 
-        // Every pull runs through here now, so skip the write (and the disk hit) once the pairing
-        // is already the one recorded.
         var territory = ClientState.TerritoryType;
-        if (Config.PlanByTerritory.TryGetValue(territory, out var existing)
-            && string.Equals(existing, code, StringComparison.OrdinalIgnoreCase)) return;
+        if (Config.PlanByTerritory.TryGetValue(territory, out var existing) && PlanCodeInput.Same(existing, code))
+            return;
 
         Config.PlanByTerritory[territory] = code;
         Config.Save();
         Log.Info($"XIVMit remembered plan {code} for territory {territory} - pulls here auto-start now.");
     }
 
-    /// <summary>
-    /// The plugin loads its saved plan in the constructor, which usually runs before the player
-    /// is logged in - so the auto-pick at load time has no LocalPlayer to match against and
-    /// silently gives up. Keep retrying (cheaply) until a row is chosen, since the timeline
-    /// shows one player's mitigations and has nothing to draw without one.
-    /// </summary>
+    // The saved plan loads in the constructor, usually before login, so there's no local player
+    // to match yet. Retry once a second until a row is picked.
     private void RetryAutoPick(float delta)
     {
         if (Config.LocalPlayerId != null) return;
@@ -228,7 +204,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void TryAutoPickPlayer(PlanContext ctx)
     {
-        // Respect an existing choice, but drop one that no longer names a row on this roster.
+        // Keep an existing choice unless it's not on this roster.
         if (Config.LocalPlayerId != null)
         {
             if (ctx.PlayersById.ContainsKey(Config.LocalPlayerId)) return;
@@ -237,8 +213,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (Objects.LocalPlayer is not { } local) return;
 
-        // Prefer an exact character-name match, then the first row of the job being played. A
-        // plan can hold two of the same job, so this is only a default; settings can override.
+        // Character name first, then the first row with the current job.
         var localName = local.Name.TextValue;
         var job = local.ClassJob.Value.Abbreviation.ExtractText();
 
@@ -253,7 +228,6 @@ public sealed class Plugin : IDalamudPlugin
         Log.Info($"XIVMit matched you to roster row {match.Id} ({match.Job} {match.Name ?? "-"}).");
     }
 
-    /// <summary>Resolve an action id to its icon id, cached (the Action sheet lookup is not free).</summary>
     internal ushort IconIdFor(uint actionId)
     {
         if (iconCache.TryGetValue(actionId, out var cached)) return cached;
@@ -267,22 +241,18 @@ public sealed class Plugin : IDalamudPlugin
         var arg = args.Trim();
         if (arg.Equals("overlay", StringComparison.OrdinalIgnoreCase))
         {
-            Config.OverlayMode = !Config.OverlayMode;
-            Config.Save();
+            ToggleOverlay();
             mainWindow.IsOpen = true;
-            return;
         }
-        if (arg.Length > 0)
+        else if (arg.Length > 0)
         {
-            // Same extraction as the code box: a URL is just as likely to be pasted after the
-            // command as typed into the window.
-            Config.PlanCode = PlanCodeInput.Extract(arg);
-            Config.Save();
-            Loader.Load(Config.PlanCode);
+            LoadPlan(PlanCodeInput.Extract(arg));
             mainWindow.IsOpen = true;
-            return;
         }
-        ToggleMain();
+        else
+        {
+            ToggleMain();
+        }
     }
 
     internal void ToggleMain() => mainWindow.Toggle();

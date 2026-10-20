@@ -1,18 +1,13 @@
 namespace XIVMit.Core;
 
-/// <summary>
-/// Turns whatever landed in the code box into a plan code. The share URL is what xivmit.app
-/// actually puts on the clipboard, so pasting one whole is the normal case rather than the
-/// exception: entering "just the code" otherwise means reading it out of the middle of a URL by
-/// hand and retyping it.
-/// </summary>
 public static class PlanCodeInput
 {
+    public static bool Same(string? a, string? b) =>
+        string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
-    /// Pulls the plan code out of <paramref name="input"/> - a bare code, a full share URL, or a
-    /// URL whose scheme got dropped on the way to the clipboard. Anything not recognisably a URL
-    /// comes back trimmed and upper-cased, exactly as a typed code always has: a code that turns
-    /// out to be wrong is the server's 404 to report, not something to second-guess here.
+    /// Pulls the plan code out of a bare code or a share URL (with or without its scheme).
+    /// Anything that isn't URL-shaped is returned trimmed and upper-cased as-is.
     /// </summary>
     public static string Extract(string input)
     {
@@ -20,15 +15,13 @@ public static class PlanCodeInput
         if (text.Length == 0) return "";
         if (!TryAsUri(text, out var uri)) return text.ToUpperInvariant();
 
-        // ?plan=CODE is the share link's shape. The fragment gets the same treatment because a
-        // single-page app that moved to hash routing would carry the same query there instead.
+        // ?plan=CODE, also checked in the fragment in case the site moves to hash routing.
         foreach (var part in new[] { uri.Query, uri.Fragment })
         {
             if (QueryValue(part, "plan") is { Length: > 0 } code) return code.ToUpperInvariant();
         }
 
-        // Otherwise the last non-empty segment, so a /plans/CODE shaped link resolves too rather
-        // than failing on a technicality.
+        // Fall back to the last path segment, for /plans/CODE style links.
         var segments = (uri.AbsolutePath + uri.Fragment)
             .Split(['/', '?', '#', '&'], StringSplitOptions.RemoveEmptyEntries);
         return segments.Length > 0
@@ -45,9 +38,8 @@ public static class PlanCodeInput
             return true;
         }
 
-        // A scheme-less paste ("xivmit.app/?plan=...") is still a URL to whoever pasted it.
-        // Only retried when something about the text is URL-shaped, so a bare code never gets
-        // https:// bolted onto it and reinterpreted as a hostname.
+        // Retry scheme-less pastes ("xivmit.app/?plan=..."), but only when they look like a URL,
+        // so a bare code isn't parsed as a hostname.
         if (text.Contains('/') || text.Contains('?'))
             return Uri.TryCreate("https://" + text, UriKind.Absolute, out uri!);
 
@@ -57,8 +49,7 @@ public static class PlanCodeInput
 
     private static string? QueryValue(string query, string key)
     {
-        // Everything after the first '?' - which for a plain query is the whole thing, and for a
-        // hash-routed fragment ("#/?plan=CODE") skips past the route to the query it carries.
+        // Skip to the first '?', which also steps past a route in a fragment like "#/?plan=CODE".
         var mark = query.IndexOf('?');
         var pairs = mark >= 0 ? query[(mark + 1)..] : query.TrimStart('#');
 

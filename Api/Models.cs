@@ -2,10 +2,8 @@ using System.Text.Json.Serialization;
 
 namespace XIVMit.Api;
 
-// DTOs mirroring @xivmit/shared (shared/index.d.ts in the XIVMit repo). Only the fields this
-// plugin actually reads are declared; System.Text.Json ignores the rest. Everything here is
-// additive-safe: a field the server stops sending deserializes to null/default rather than
-// throwing, which matches the API's own additive-change contract.
+// Mirrors @xivmit/shared, keeping only the fields the plugin reads. Missing fields fall back to
+// defaults, so the server can add or drop fields without breaking deserialization.
 
 public sealed class Ability
 {
@@ -17,11 +15,7 @@ public sealed class Ability
     [JsonPropertyName("minLevel")] public int MinLevel { get; set; }
     [JsonPropertyName("scope")] public string Scope { get; set; } = "";
     [JsonPropertyName("type")] public string Type { get; set; } = "";
-
-    // The FFXIV game action id. Present for ~87% of abilities; the ones without simply
-    // can't be icon-rendered yet.
-    [JsonPropertyName("abilityId")] public uint? GameActionId { get; set; }
-
+    [JsonPropertyName("abilityId")] public uint? GameActionId { get; set; } // missing for some abilities, which then have no icon
     [JsonPropertyName("replaces")] public string? Replaces { get; set; }
     [JsonPropertyName("durationUpgrade")] public LevelDuration? DurationUpgrade { get; set; }
 }
@@ -39,10 +33,8 @@ public sealed class Phase
     [JsonPropertyName("endTime")] public float EndTime { get; set; }
     [JsonPropertyName("clockReset")] public bool ClockReset { get; set; }
 
-    // A short scripted transition (FRU's Intermission, TOP's P3 Transition): a real phase for
-    // boundary/timing purposes, but excluded when phases are numbered for display - see
-    // PlanContext.DisplayPhaseNumber. Additive field; absent on a stale cached /api/fights
-    // response, which just means every phase counts as before.
+    // Short scripted transitions (FRU's Intermission, TOP's P3 Transition). Skipped when
+    // numbering phases for display.
     [JsonPropertyName("intermission")] public bool Intermission { get; set; }
 }
 
@@ -54,9 +46,7 @@ public sealed class BossAction
     [JsonPropertyName("type")] public string Type { get; set; } = "raid";
     [JsonPropertyName("castTime")] public float? CastTime { get; set; }
 
-    // Not in the server schema today. Reserved so that boss actions gaining a game action id
-    // upstream is picked up automatically; until then a boss action with no id here just isn't
-    // a sync candidate (FightTracker's tier 2 - see its class doc comment).
+    // Not sent by the server yet. Boss actions only become cast/hit sync points once it is.
     [JsonPropertyName("actionId")] public uint? GameActionId { get; set; }
 }
 
@@ -69,6 +59,8 @@ public sealed class Fight
     [JsonPropertyName("maxLevel")] public int MaxLevel { get; set; } = 100;
     [JsonPropertyName("phases")] public List<Phase> Phases { get; set; } = [];
     [JsonPropertyName("bossActions")] public List<BossAction> BossActions { get; set; } = [];
+
+    public string Label => ShortName ?? Name;
 }
 
 public sealed class Player

@@ -1,49 +1,37 @@
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 
 namespace XIVMit.Api;
 
-/// <summary>
-/// Thin read-only client for the public xivmit.app endpoints. Every call this plugin makes is
-/// unauthenticated: GET /api/plans/:code, /api/fights/:id and /api/jobs/:job are all public.
-/// </summary>
+/// <summary>Read-only client for xivmit.app's public endpoints.</summary>
 public sealed class XivMitApi : IDisposable
 {
-    private static readonly JsonSerializerOptions JsonOpts = new()
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    private readonly HttpClient http = new()
     {
-        PropertyNameCaseInsensitive = true,
+        BaseAddress = new Uri("https://xivmit.app/"),
+        Timeout = TimeSpan.FromSeconds(15),
     };
 
-    private const string BaseUrl = "https://xivmit.app/";
-
-    private readonly HttpClient http;
-
-    public XivMitApi()
-    {
-        http = new HttpClient
-        {
-            BaseAddress = new Uri(BaseUrl),
-            Timeout = TimeSpan.FromSeconds(15),
-        };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("XIVMit-Dalamud/0.1");
-    }
+    public XivMitApi() => http.DefaultRequestHeaders.UserAgent.ParseAdd("XIVMit-Dalamud/0.1");
 
     public void Dispose() => http.Dispose();
 
-    /// <summary>Fetch a plan by its share code (e.g. "UMAD-4C3ME5"). Case-insensitive server-side.</summary>
     public async Task<Plan> GetPlanAsync(string code, CancellationToken ct = default)
     {
-        var plan = await GetAsync<Plan>($"api/plans/{Uri.EscapeDataString(code.Trim().ToUpperInvariant())}", ct);
-        // The server keys the plan by URL, not by a body field, so backfill it for display.
-        if (string.IsNullOrEmpty(plan.Code)) plan.Code = code.Trim().ToUpperInvariant();
+        code = code.Trim().ToUpperInvariant();
+        var plan = await GetAsync<Plan>($"api/plans/{Uri.EscapeDataString(code)}", ct);
+        // The code is only in the URL, not the response body.
+        if (string.IsNullOrEmpty(plan.Code)) plan.Code = code;
         return plan;
     }
 
     public Task<Fight> GetFightAsync(string fightId, CancellationToken ct = default) =>
         GetAsync<Fight>($"api/fights/{Uri.EscapeDataString(fightId)}", ct);
 
-    /// <summary>Abilities for one job abbreviation (e.g. "WAR"). Server injects the `job` field.</summary>
     public Task<List<Ability>> GetJobAsync(string job, CancellationToken ct = default) =>
         GetAsync<List<Ability>>($"api/jobs/{Uri.EscapeDataString(job.ToLowerInvariant())}", ct);
 
@@ -67,13 +55,9 @@ public sealed class XivMitApi : IDisposable
         s.Length <= max ? s : string.Concat(s.AsSpan(0, max), "...");
 }
 
-/// <summary>
-/// The technical message (status, path, response body snippet) is for the log only -
-/// <see cref="Core.PlanLoader"/> maps this to a user-facing message via <see cref="StatusCode"/>
-/// and the exception's type, never shows <c>Message</c> itself in the UI.
-/// </summary>
-public sealed class XivMitApiException(string message, System.Net.HttpStatusCode? statusCode = null)
+/// <summary>The message is for the log. PlanLoader turns this into the text the UI shows.</summary>
+public sealed class XivMitApiException(string message, HttpStatusCode? statusCode = null)
     : Exception(message)
 {
-    public System.Net.HttpStatusCode? StatusCode { get; } = statusCode;
+    public HttpStatusCode? StatusCode { get; } = statusCode;
 }

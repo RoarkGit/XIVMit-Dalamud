@@ -8,9 +8,8 @@ namespace XIVMit.Core;
 public enum LoadStatus { Idle, Loading, Loaded, Failed }
 
 /// <summary>
-/// Fetches a plan plus everything it depends on (its fight, and the ability list for every job on
-/// the roster) and resolves them into a <see cref="PlanContext"/>. All network work happens off
-/// the framework thread; only the final assignment of <see cref="Context"/> is observed by it.
+/// Fetches a plan, its fight, and the abilities for every job on its roster, then builds a
+/// <see cref="PlanContext"/> off the framework thread.
 /// </summary>
 public sealed class PlanLoader : IDisposable
 {
@@ -61,52 +60,27 @@ public sealed class PlanLoader : IDisposable
 
         _ = Task.Run(async () =>
         {
-            Plan plan;
+            var what = "plan";
             try
             {
-                plan = await api.GetPlanAsync(code, ct);
-            }
-            // cts.Cancel() means a newer Load() superseded this one - leave state to that one.
-            // Guarded on ct specifically: HttpClient's own 15s timeout throws a subclass of
-            // OperationCanceledException too, on its own internal token, and without this guard
-            // a genuine timeout got silently swallowed as if it were a supersession - the UI just
-            // sat on "Loading..." forever with no error shown at all.
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                Fail(Friendly(ex, "plan"), ex, code);
-                return;
-            }
+                var plan = await api.GetPlanAsync(code, ct);
 
-            try
-            {
+                what = "fight or ability data";
                 var fight = await api.GetFightAsync(plan.FightId, ct);
 
-                // One request per distinct job on the roster, in parallel. These are cached
-                // hard server-side (max-age=3600), so repeat loads are cheap.
                 var jobs = plan.Players
                     .Select(p => p.Job)
                     .Where(j => !string.IsNullOrWhiteSpace(j))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
+                    .Distinct(StringComparer.OrdinalIgnoreCase);
                 var fetched = await Task.WhenAll(jobs.Select(async j =>
                     (Job: j, Abilities: await api.GetJobAsync(j, ct))));
 
                 ct.ThrowIfCancellationRequested();
 
-                var byJob = fetched.ToDictionary(
-                    x => x.Job, x => x.Abilities, StringComparer.OrdinalIgnoreCase);
-
+                var byJob = fetched.ToDictionary(x => x.Job, x => x.Abilities, StringComparer.OrdinalIgnoreCase);
                 var ctx = PlanContext.Build(plan, fight, byJob);
 
-                // Published on the framework thread on purpose - everything downstream of Loaded
-                // (the tracker's lookup tables, the windows' reads of Context) gets touched by
-                // the framework and draw threads, and handing it over straight from this
-                // background task would race with them.
+                // Publish on the framework thread; Loaded handlers and the windows read this there.
                 await framework.RunOnFrameworkThread(() =>
                 {
                     Context = ctx;
@@ -116,32 +90,20 @@ public sealed class PlanLoader : IDisposable
 
                 log.Info($"XIVMit loaded plan {plan.Code} ({fight.Name}): {ctx.Mits.Count} mits.");
             }
+            // Only our own token means a newer Load() took over. HttpClient's timeout also throws
+            // OperationCanceledException, and that one should surface as an error.
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Superseded - see the identical guard above.
             }
             catch (Exception ex)
             {
-                Fail(Friendly(ex, "fight or ability data"), ex, code);
+                Status = LoadStatus.Failed;
+                Error = Friendly(ex, what);
+                log.Error(ex, $"XIVMit failed to load plan {code}.");
             }
         }, ct);
     }
 
-    private void Fail(string friendly, Exception ex, string code)
-    {
-        Status = LoadStatus.Failed;
-        Error = friendly;
-        // Full technical detail (status, path, response snippet) goes to the log only - never
-        // shown in the UI, which is exactly what this method exists to avoid.
-        log.Error(ex, $"XIVMit failed to load plan {code}.");
-    }
-
-    /// <summary>
-    /// Maps an exception from a plan/fight/job fetch to something worth showing a player, rather
-    /// than the raw "404 Not Found from /api/plans/UMAD-XXXXX: {...}" the exception itself
-    /// carries. <paramref name="what"/> names the resource being fetched, for the fallback and
-    /// not-found phrasing.
-    /// </summary>
     private static string Friendly(Exception ex, string what) => ex switch
     {
         XivMitApiException { StatusCode: HttpStatusCode.NotFound } when what == "plan" =>

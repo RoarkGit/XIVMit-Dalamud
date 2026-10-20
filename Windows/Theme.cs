@@ -4,11 +4,7 @@ using Dalamud.Interface.Utility.Raii;
 
 namespace XIVMit.Windows;
 
-/// <summary>
-/// Mirrors the web app's palette (client/src/styles/vars.css) so the in-game window reads as the
-/// same tool. Values are copied verbatim from the CSS custom properties; keep them in sync if
-/// the site's theme changes.
-/// </summary>
+/// <summary>Palette copied from the web app's client/src/styles/vars.css.</summary>
 public static class Theme
 {
     private static Vector4 Hex(uint rgb, float a = 1f) => new(
@@ -17,7 +13,6 @@ public static class Theme
         (rgb & 0xFF) / 255f,
         a);
 
-    // --bg / --surface / --card / --border / --accent / --text / --text2 / --text3
     public static readonly Vector4 Bg = Hex(0x0b0a13);
     public static readonly Vector4 Surface = Hex(0x12101e);
     public static readonly Vector4 Card = Hex(0x1a1728);
@@ -33,7 +28,6 @@ public static class Theme
 
     public readonly record struct RoleColors(Vector4 Fill, Vector4 Border, Vector4 Text);
 
-    // --role-*: fill is the rgb triplet the CSS uses behind a block, border/text its companions.
     private static readonly Dictionary<string, RoleColors> Roles = new()
     {
         ["tank"] = new(Hex(0x1c3eb9), Hex(0x5a8cff), Hex(0xaac8ff)),
@@ -65,18 +59,12 @@ public static class Theme
     public static uint U32(Vector4 c, float alpha) =>
         ImGui.ColorConvertFloat4ToU32(c with { W = alpha });
 
-    /// <summary>
-    /// Pushes the window chrome. Dispose in PostDraw. Kept as one call so both windows stay
-    /// visually identical without duplicating the list.
-    /// </summary>
     public static IDisposable Push() =>
         ImRaii.PushColor(ImGuiCol.WindowBg, Surface)
             .Push(ImGuiCol.ChildBg, Bg)
             .Push(ImGuiCol.PopupBg, Card)
-            // The web app's buttons read as buttons because of their 1px border, not their
-            // fill (.btn-ghost is transparent + --border). ImGui has one global border color,
-            // so this uses --text3, the lightest palette value that still belongs to the
-            // chrome, and gives buttons a fill clearly lighter than the window behind them.
+            // ImGui has a single border color, and buttons need a visible one to read as
+            // buttons, so this is lighter than the site's --border.
             .Push(ImGuiCol.Border, Text3)
             .Push(ImGuiCol.Text, Text)
             .Push(ImGuiCol.TextDisabled, Text3)
@@ -102,7 +90,6 @@ public static class Theme
         ImRaii.PushStyle(ImGuiStyleVar.WindowRounding, 6f)
             .Push(ImGuiStyleVar.ChildRounding, 4f)
             .Push(ImGuiStyleVar.FrameRounding, 4f)
-            // Every button and input gets a visible edge, matching the site's 1px borders.
             .Push(ImGuiStyleVar.FrameBorderSize, 1f)
             .Push(ImGuiStyleVar.PopupRounding, 4f)
             .Push(ImGuiStyleVar.WindowPadding, new Vector2(10, 10))

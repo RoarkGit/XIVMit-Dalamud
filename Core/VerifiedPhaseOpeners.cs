@@ -1,53 +1,32 @@
 namespace XIVMit.Core;
 
 /// <summary>
-/// Real game NPC ids (Dalamud's <c>IGameObject.BaseId</c>) that mark a specific phase transition
-/// - wherever a boss's identity or targetable state reliably distinguishes the boundary.
+/// NPC BaseIds that reliably mark a phase transition, each checked against 3+ FFLogs pulls (and
+/// live where logs can't show targetability or HP). Transitions without an entry fall back to
+/// FightTracker's top-HP heuristic.
 ///
-/// Every entry's cross-verified against 3+ independent FFLogs pulls: phase-disjoint, a real id
-/// stable across every pull (not one of FFLogs' synthetic +2,000,000 merged-entity ids), plus
-/// live confirmation wherever FFLogs can't see the relevant state directly (targetable, HP). A
-/// transition missing from its fight's table just doesn't have a verified signal yet - usually
-/// because the boss keeps its NPC id and only changes moveset - and falls back to
-/// <see cref="FightTracker"/>'s heuristic (max-HP-of-targetable) tier instead.
-///
-/// Keys are the DESTINATION phase index into <c>Fight.Phases</c> (index 1 means "the signal for
-/// reaching Phases[1]"); index 0 is never a key. Raw array indices, not the "P{n}" a player would
-/// use - those diverge once a fight has an <see cref="Phase.Intermission"/> phase (see
-/// <see cref="PlanContext.DisplayPhaseNumber"/>) - so the comments below name phases instead of
-/// numbering them.
+/// Keys are the index into <c>Fight.Phases</c> of the phase being entered, not the displayed
+/// phase number (which skips intermissions), so the comments name phases instead.
 /// </summary>
 public static class VerifiedPhaseOpeners
 {
-    /// <summary>What state change in a <see cref="PhaseOpener"/>'s BaseId counts as arrival.
-    /// FFLogs can't see live targetable/HP state directly, so anything past <see cref="Debut"/>
-    /// is a live-testing call, not something derived from log data alone.</summary>
     public enum OpenerSignal
     {
-        /// <summary>Alive and targetable the moment it appears - the common case.</summary>
+        /// <summary>Appears alive and targetable.</summary>
         Debut,
-        /// <summary>Alive, targetable or not - for a boss that's on the field well before it's
-        /// attackable. Debut would just sit there waiting for targetable and fire on the wrong,
-        /// later boundary instead.</summary>
+        /// <summary>Appears alive, targetable or not. For bosses that show up before they can be hit.</summary>
         Exists,
-        /// <summary>An already-known BaseId flips from untargetable to targetable - the edge,
-        /// not the level. For a boundary where an existing actor (already matched via an earlier
-        /// Exists or BecomesTargetable entry for the same BaseId) becomes attackable, rather
-        /// than a new one debuting.</summary>
+        /// <summary>An already-present actor goes from untargetable to targetable.</summary>
         BecomesTargetable,
-        /// <summary>Same as <see cref="BecomesTargetable"/>, plus MaxHp has to differ from what
-        /// this BaseId last showed while targetable - so a plain interrupt (untargetable, then
-        /// targetable again at the same HP) can't false-fire it. For "killed to 0, heals to a
-        /// smaller pool" transitions specifically.</summary>
+        /// <summary>
+        /// Like <see cref="BecomesTargetable"/>, but max HP must also differ from its last
+        /// targetable value, so a plain untargetable window doesn't trigger it.
+        /// </summary>
         HealsAndBecomesTargetable,
     }
 
-    /// <summary>One phase-transition signal - the BaseId to watch, and what state change in it
-    /// counts as arrival.</summary>
     public readonly record struct PhaseOpener(uint BaseId, OpenerSignal Signal = OpenerSignal.Debut)
     {
-        // Lets a plain-Debut entry stay a bare uint literal (`[1] = 15713,`) instead of spelling
-        // out the constructor every time.
         public static implicit operator PhaseOpener(uint baseId) => new(baseId);
     }
 
@@ -73,11 +52,10 @@ public static class VerifiedPhaseOpeners
             {
                 [1] = 12604, // Thordan
                 [2] = 12605, // Nidstinien
-                [3] = 12609, // left eye, Eyes - first cast lines up with FFLogs' own phase mark to under 0.1s
-                // Casts once early too (a P1/Thordan cameo), but takes no damage until here -
-                // BecomesTargetable instead of a plain debut guards against that cameo turning
-                // out to be live-targetable in some pull we haven't checked.
-                [4] = new PhaseOpener(12603, OpenerSignal.BecomesTargetable), // Ser Charibert, Rewind
+                [3] = 12609, // left eye, Eyes. First cast matches FFLogs' phase mark to under 0.1s
+                // Ser Charibert, Rewind. He also casts once during Thordan but can't be damaged
+                // then, so wait for him to become targetable.
+                [4] = new PhaseOpener(12603, OpenerSignal.BecomesTargetable),
                 [5] = 12611, // Dark Thordan
                 [6] = 12612, // Double Dragons
                 [7] = 12616, // Dragon-king Thordan
@@ -86,14 +64,11 @@ public static class VerifiedPhaseOpeners
             {
                 [1] = 15713, // Omega M/F
                 [2] = new PhaseOpener(15717, OpenerSignal.Exists), // Omega appears untargetable, P3 Transition
-                [3] = new PhaseOpener(15717, OpenerSignal.BecomesTargetable), // same Omega, now targetable - Final Omega
-                // Killed to 0, heals to a smaller pool (11,125,976 -> 4,895,429 max HP, confirmed
-                // both live and via FFLogs). DPS-gated rather than a fixed timer, which actually
-                // works in our favor: AdvanceToPhase always seeks to the authored boundary
-                // regardless of when the trigger fires, so this stays accurate whether a group
-                // clears fast or slow.
-                [4] = new PhaseOpener(15717, OpenerSignal.HealsAndBecomesTargetable), // same Omega again - Blue Screen
-                [5] = 15720, // Dynamis Omega (targetable ~3s after the boundary; first cast is ~9s early, don't trust that one)
+                [3] = new PhaseOpener(15717, OpenerSignal.BecomesTargetable), // same Omega, now targetable, Final Omega
+                // Same Omega again, Blue Screen. Killed to 0 then heals to a smaller pool
+                // (11,125,976 -> 4,895,429 max HP).
+                [4] = new PhaseOpener(15717, OpenerSignal.HealsAndBecomesTargetable),
+                [5] = 15720, // Dynamis Omega. Targetable ~3s after the boundary; its first cast is ~9s early
                 [6] = 15725, // Alpha-Omega
             },
         };

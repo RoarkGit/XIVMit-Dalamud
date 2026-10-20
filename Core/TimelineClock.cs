@@ -3,47 +3,26 @@ namespace XIVMit.Core;
 public enum ClockState { Stopped, Running, Paused }
 
 /// <summary>
-/// The fight clock. Advances off <see cref="Dalamud.Plugin.Services.IFramework"/> delta rather
-/// than wall time so it stays in step with the game (and stalls with it during a loading screen
-/// or a hitch) instead of silently running ahead.
+/// The fight clock. Advances on framework delta rather than wall time, so it stalls along with
+/// the game during loading screens and hitches.
 /// </summary>
 public sealed class TimelineClock
 {
     public ClockState State { get; private set; } = ClockState.Stopped;
 
-    /// <summary>
-    /// Seconds since pull, in the fight's own absolute reference frame. Resyncs correct this -
-    /// it's what everything reads that needs to know "where are we in the authored plan": phase
-    /// lookups, cast-sync deltas, mit filtering.
-    /// </summary>
+    /// <summary>Seconds since pull in the fight's own timeline. Resyncs move this.</summary>
     public float Time { get; private set; }
 
-    /// <summary>
-    /// Seconds since combat actually started (or play was pressed) - a plain stopwatch, no resync
-    /// ever touches it. Nothing computes against this directly. It exists so a correction is
-    /// recoverable afterward as <c>Time - CombatTime</c> instead of vanishing the moment it gets
-    /// folded into <see cref="Time"/>, and so "how long has this pull really been running" has a
-    /// real answer that no sync correction can corrupt.
-    /// </summary>
+    /// <summary>Seconds since combat actually started. Never resynced.</summary>
     public float CombatTime { get; private set; }
 
-    /// <summary>Total correction applied by resyncs this run, for display/diagnostics.</summary>
-    public float TotalDrift { get; private set; }
-
-    public event Action<float, float>? Resynced; // (from, to)
-
-    /// <summary>
-    /// A pull beginning - a manual press or an auto-start, either way. Deliberately not fired by
-    /// <see cref="SeekTo"/>, which also starts a stopped clock but as a mid-fight catch-up rather
-    /// than as the start of a pull.
-    /// </summary>
+    /// <summary>A pull starting, manually or on combat. Not raised by <see cref="SeekTo"/>.</summary>
     public event Action? Started;
 
-    public void Start(float at = 0f)
+    public void Start()
     {
-        Time = at;
-        CombatTime = at;
-        TotalDrift = 0f;
+        Time = 0f;
+        CombatTime = 0f;
         State = ClockState.Running;
         Started?.Invoke();
     }
@@ -56,7 +35,6 @@ public sealed class TimelineClock
         State = ClockState.Stopped;
         Time = 0f;
         CombatTime = 0f;
-        TotalDrift = 0f;
     }
 
     public void Toggle()
@@ -76,31 +54,11 @@ public sealed class TimelineClock
         CombatTime += deltaSeconds;
     }
 
-    /// <summary>
-    /// Jump the clock to an absolute time. Used both by manual phase-skip and by the sync
-    /// engine. Starts the clock if it was stopped, so a mid-fight plugin load can catch up.
-    /// </summary>
-    public void SeekTo(float t, bool countAsDrift = false)
+    /// <summary>Jumps to an absolute time, starting the clock if needed (mid-fight catch-up).</summary>
+    public void SeekTo(float t)
     {
-        var from = Time;
         Time = Math.Max(0f, t);
-        if (countAsDrift) TotalDrift += Time - from;
         if (State == ClockState.Stopped) State = ClockState.Running;
-        Resynced?.Invoke(from, Time);
-    }
-
-    public void Nudge(float seconds) => SeekTo(Time + seconds);
-
-    /// <summary>
-    /// Moves the clock without touching its run state, for manual scrubbing. Distinct from
-    /// <see cref="SeekTo"/>, which starts a stopped clock so a mid-fight resync can catch up:
-    /// scrolling the timeline to look ahead should not quietly start it ticking.
-    /// </summary>
-    public void Scrub(float seconds)
-    {
-        var from = Time;
-        Time = Math.Max(0f, Time + seconds);
-        Resynced?.Invoke(from, Time);
     }
 
     public static string Format(float t)

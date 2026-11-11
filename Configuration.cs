@@ -35,6 +35,10 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool LockWindow { get; set; }
     public bool OverlayMode { get; set; }
+
+    /// <summary>In overlay mode, let clicks through to the game everywhere but the buttons.</summary>
+    public bool OverlayClickThrough { get; set; }
+
     public bool ShowPhaseButtons { get; set; } = true;
 
     /// <summary>Most recent first.</summary>

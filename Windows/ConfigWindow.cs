@@ -78,6 +78,14 @@ public sealed class ConfigWindow : ThemedWindow
         dirty |= Checkbox("Overlay mode", cfg.OverlayMode, v => cfg.OverlayMode = v);
         Hint("Draining countdown bars on a transparent window, reading as a game overlay.");
 
+        using (ImRaii.Disabled(!cfg.OverlayMode))
+        {
+            dirty |= Checkbox("Click-through overlay", cfg.OverlayClickThrough,
+                v => cfg.OverlayClickThrough = v);
+            Hint("Clicks on the overlay pass through to the game, except on its buttons. " +
+                 "Bar tooltips are disabled, and the window can't be dragged while this is on.");
+        }
+
         if (plugin.Tracker.HookFailure is { } fail)
         {
             SeparatorText("Advanced");

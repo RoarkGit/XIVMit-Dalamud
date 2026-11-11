@@ -50,6 +50,10 @@ public sealed class MainWindow : ThemedWindow
     // Collected while drawing bars and shown once at the end, since bars can overlap.
     private MitCluster? hoveredCluster;
 
+    // Screen rects of the overlay's buttons from the last frame. With click-through on, the
+    // window only takes mouse input while the cursor is over one of these.
+    private readonly List<(Vector2 Min, Vector2 Max)> hitRects = [];
+
     public MainWindow(Plugin plugin) : base("XIVMit###xivmit_main")
     {
         this.plugin = plugin;
@@ -67,12 +71,16 @@ public sealed class MainWindow : ThemedWindow
     // Overlay mode hides the plan bar, so it only kicks in once a plan is loaded.
     private bool Overlay => plugin.Config.OverlayMode && plugin.Loader.Context != null;
 
+    private bool ClickThrough => Overlay && plugin.Config.OverlayClickThrough;
+
     public override void PreDraw()
     {
         // Content is positioned by the clock, so scrolling the window would only cause jitter.
         var flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
         if (plugin.Config.LockWindow) flags |= ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize;
         if (Overlay) flags |= ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize;
+        // Rects are a frame old, which is fine since the buttons don't move under the cursor.
+        if (ClickThrough && !OverButton()) flags |= ImGuiWindowFlags.NoInputs;
         Flags = flags;
 
         base.PreDraw();
@@ -104,6 +112,7 @@ public sealed class MainWindow : ThemedWindow
     public override void Draw()
     {
         var ctx = plugin.Loader.Context;
+        hitRects.Clear();
 
         if (!Overlay)
         {
@@ -143,6 +152,18 @@ public sealed class MainWindow : ThemedWindow
     // Explicit size so the hover rect matches the drawn button.
     private static Vector2 IconSq() => new(ImGui.GetFrameHeight(), ImGui.GetFrameHeight());
 
+    /// <summary>Marks the last item as clickable in click-through mode.</summary>
+    private void Hit() => hitRects.Add((ImGui.GetItemRectMin(), ImGui.GetItemRectMax()));
+
+    private bool OverButton()
+    {
+        var mouse = ImGui.GetMousePos();
+        foreach (var (min, max) in hitRects)
+            if (mouse.X >= min.X && mouse.Y >= min.Y && mouse.X < max.X && mouse.Y < max.Y)
+                return true;
+        return false;
+    }
+
     /// <summary>Text with a black outline in overlay mode, so it stays readable on the game.</summary>
     private void OverlayText(Vector4 color, string text)
     {
@@ -172,8 +193,10 @@ public sealed class MainWindow : ThemedWindow
         OverlayText(Theme.Amber, $"Load {plugin.PendingZonePlanLabel} for this duty?");
         ImGui.SameLine();
         if (ImGui.SmallButton("Load##zoneprompt")) plugin.LoadPendingZonePlan();
+        Hit();
         ImGui.SameLine();
         if (ImGui.SmallButton("x##zoneprompt")) plugin.DismissZonePrompt();
+        Hit();
     }
 
     private void DrawNoRosterRow()
@@ -183,6 +206,7 @@ public sealed class MainWindow : ThemedWindow
         OverlayText(Theme.Text2, "Pick which player on this plan is you.");
         ImGui.Spacing();
         if (ImGui.Button("Choose my row")) plugin.ToggleConfig();
+        Hit();
     }
 
     private string EmptyTimelineMessage() => plugin.Clock.State == ClockState.Stopped
@@ -300,10 +324,12 @@ public sealed class MainWindow : ThemedWindow
         ImGui.SetCursorPosY(btnY);
         var icon = clock.State == ClockState.Running ? FontAwesomeIcon.Pause : FontAwesomeIcon.Play;
         if (ImGuiComponents.IconButton(icon, sq)) clock.Toggle();
+        Hit();
 
         ImGui.SameLine();
         ImGui.SetCursorPosY(btnY);
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Stop, sq)) clock.Stop();
+        Hit();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Stop and reset");
 
         using (plugin.HeaderFont.Push(HeaderTextPx))
@@ -336,6 +362,7 @@ public sealed class MainWindow : ThemedWindow
 
         // Same order as the plan bar (overlay, then lock).
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Expand, sq)) plugin.ToggleOverlay();
+        Hit();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Exit overlay mode");
         ImGui.SameLine();
         ImGui.SetCursorPosY(btnY);
@@ -353,6 +380,7 @@ public sealed class MainWindow : ThemedWindow
             plugin.Config.LockWindow = !locked;
             plugin.Config.Save();
         }
+        Hit();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip(locked ? "Unlock window position" : "Lock window position");
     }
 
@@ -364,6 +392,7 @@ public sealed class MainWindow : ThemedWindow
             plugin.Config.ShowPhaseButtons = !shown;
             plugin.Config.Save();
         }
+        Hit();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(shown ? "Hide phase buttons" : "Show phase buttons");
     }
@@ -551,6 +580,7 @@ public sealed class MainWindow : ThemedWindow
 
             if (ImGui.Button($"{label}##phase{i}"))
                 plugin.Clock.SeekTo(p.StartTime);
+            Hit();
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(Overlay && !p.Intermission ? $"Sync to {label}: {p.Name}" : $"Sync to {label}");
         }
